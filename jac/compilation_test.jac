@@ -16,7 +16,9 @@ import from jac.layers.compilation {
     infer_safety_rules,
     event_to_step,
     compile_session,
-    validate_workflow
+    validate_workflow,
+    compile_segmented_recording,
+    validate_compiled_artifact
 }
 import from typing { Any }
 
@@ -330,6 +332,293 @@ def test_infer_safety_rules() {
 }
 
 # ============================================================
+# SEGMENTED COMPILATION TESTS — helpers
+# ============================================================
+
+glob DEFAULT_CONTINUATION: dict[str, Any] = {
+    "strategy": [{"mode": "next_similar_item", "options": {}}]
+};
+
+glob DEFAULT_STOP_POLICY: dict[str, Any] = {
+    "mode": "no_more_items",
+    "options": {}
+};
+
+def mk_segmented_recording(
+    ot_events: list[Any],
+    rep_events: list[Any],
+    continuation: dict[str, Any],
+    stop_policy: dict[str, Any]
+) -> dict[str, Any] {
+    return {
+        "recording_id": "rec_test_001",
+        "task_name": "Test workflow",
+        "state": "finished",
+        "segments": {
+            "one_time": {"events": ot_events, "annotations": []},
+            "repeated": {"events": rep_events, "annotations": []}
+        },
+        "continuation": continuation,
+        "stop_policy": stop_policy,
+        "meta": {
+            "start_url": "https://example.com",
+            "domains": ["example.com"],
+            "user_goal": "Test goal"
+        }
+    };
+}
+
+# ============================================================
+# Test 1: only one_time events compile successfully
+# ============================================================
+
+def test_seg_only_one_time() {
+    rec: dict[str, Any] = mk_segmented_recording(
+        [mk_click("btn-login", 0), mk_nav("https://example.com/list", 100)],
+        [],
+        DEFAULT_CONTINUATION,
+        DEFAULT_STOP_POLICY
+    );
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg1: only one_time compiles ok", bool(result.get("ok", False)));
+    art: Any = result.get("artifact", {});
+    ot_steps: list[Any] = art.get("one_time", {}).get("steps", []);
+    rep_steps: list[Any] = art.get("repeated", {}).get("steps", []);
+    assert_true("seg1: one_time has steps", len(ot_steps) > 0);
+    assert_eq("seg1: repeated is empty", len(rep_steps), 0);
+}
+
+# ============================================================
+# Test 2: only repeated events compile successfully
+# ============================================================
+
+def test_seg_only_repeated() {
+    rec: dict[str, Any] = mk_segmented_recording(
+        [],
+        [mk_click("btn-item", 0), mk_nav("https://example.com/item/1", 100)],
+        DEFAULT_CONTINUATION,
+        DEFAULT_STOP_POLICY
+    );
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg2: only repeated compiles ok", bool(result.get("ok", False)));
+    art: Any = result.get("artifact", {});
+    ot_steps: list[Any] = art.get("one_time", {}).get("steps", []);
+    rep_steps: list[Any] = art.get("repeated", {}).get("steps", []);
+    assert_eq("seg2: one_time is empty", len(ot_steps), 0);
+    assert_true("seg2: repeated has steps", len(rep_steps) > 0);
+}
+
+# ============================================================
+# Test 3: both segments compile successfully
+# ============================================================
+
+def test_seg_both_segments() {
+    rec: dict[str, Any] = mk_segmented_recording(
+        [mk_nav("https://example.com", 0)],
+        [mk_click("btn-next", 0), mk_nav("https://example.com/item", 100)],
+        DEFAULT_CONTINUATION,
+        DEFAULT_STOP_POLICY
+    );
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg3: both segments compile ok", bool(result.get("ok", False)));
+    art: Any = result.get("artifact", {});
+    assert_true("seg3: one_time has steps", len(art.get("one_time", {}).get("steps", [])) > 0);
+    assert_true("seg3: repeated has steps", len(art.get("repeated", {}).get("steps", [])) > 0);
+}
+
+# ============================================================
+# Test 4: one_time events compile into one_time steps only
+# ============================================================
+
+def test_seg_one_time_steps_isolated() {
+    rec: dict[str, Any] = mk_segmented_recording(
+        [mk_click("btn-login", 0)],
+        [mk_click("btn-item", 0)],
+        DEFAULT_CONTINUATION,
+        DEFAULT_STOP_POLICY
+    );
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg4: compiles ok", bool(result.get("ok", False)));
+    art: Any = result.get("artifact", {});
+    ot_clicks: list[Any] = [s for s in art.get("one_time", {}).get("steps", []) if isinstance(s, dict) and s.get("type") == "click"];
+    rep_clicks: list[Any] = [s for s in art.get("repeated", {}).get("steps", []) if isinstance(s, dict) and s.get("type") == "click"];
+    assert_eq("seg4: one_time has exactly 1 click", len(ot_clicks), 1);
+    assert_eq("seg4: repeated has exactly 1 click", len(rep_clicks), 1);
+    ot_sel: str = str(ot_clicks[0].get("target", {}).get("primary", {}).get("selector", ""));
+    rep_sel: str = str(rep_clicks[0].get("target", {}).get("primary", {}).get("selector", ""));
+    assert_eq("seg4: one_time click is btn-login", ot_sel, "#btn-login");
+    assert_eq("seg4: repeated click is btn-item", rep_sel, "#btn-item");
+}
+
+# ============================================================
+# Test 5: repeated events compile into repeated steps only
+# ============================================================
+
+def test_seg_repeated_steps_isolated() {
+    rec: dict[str, Any] = mk_segmented_recording(
+        [],
+        [mk_click("btn-process", 0)],
+        DEFAULT_CONTINUATION,
+        DEFAULT_STOP_POLICY
+    );
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg5: compiles ok", bool(result.get("ok", False)));
+    art: Any = result.get("artifact", {});
+    ot_steps: list[Any] = art.get("one_time", {}).get("steps", []);
+    rep_clicks: list[Any] = [s for s in art.get("repeated", {}).get("steps", []) if isinstance(s, dict) and s.get("type") == "click"];
+    assert_eq("seg5: one_time has 0 steps", len(ot_steps), 0);
+    assert_eq("seg5: repeated has 1 click step", len(rep_clicks), 1);
+}
+
+# ============================================================
+# Test 6: repeated typing collapse works inside repeated
+# ============================================================
+
+def test_seg_repeated_typing_collapse() {
+    rec: dict[str, Any] = mk_segmented_recording(
+        [],
+        [
+            mk_input("search", "h", 0),
+            mk_input("search", "he", 100),
+            mk_input("search", "hello", 200)
+        ],
+        DEFAULT_CONTINUATION,
+        DEFAULT_STOP_POLICY
+    );
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg6: compiles ok", bool(result.get("ok", False)));
+    rep_steps: list[Any] = result.get("artifact", {}).get("repeated", {}).get("steps", []);
+    fills: list[Any] = [s for s in rep_steps if isinstance(s, dict) and s.get("type") == "fill"];
+    assert_eq("seg6: 3 keystrokes collapse to 1 fill in repeated", len(fills), 1);
+    assert_eq("seg6: fill value is final keystroke", str(fills[0].get("value", {}).get("value", "")), "hello");
+}
+
+# ============================================================
+# Test 7: masked repeated input becomes secret in repeated output
+# ============================================================
+
+def test_seg_masked_repeated_input_is_secret() {
+    pwd_evt: dict[str, Any] = {
+        "id": "evt_pwd_rep", "timestamp": ts(0), "type": "input",
+        "url": "https://example.com",
+        "element": {"tag": "input", "name": "password", "type": "password"},
+        "value": "s3cret", "masked": True
+    };
+    rec: dict[str, Any] = mk_segmented_recording([], [pwd_evt], DEFAULT_CONTINUATION, DEFAULT_STOP_POLICY);
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg7: compiles ok", bool(result.get("ok", False)));
+    rep_steps: list[Any] = result.get("artifact", {}).get("repeated", {}).get("steps", []);
+    fills: list[Any] = [s for s in rep_steps if isinstance(s, dict) and s.get("type") == "fill"];
+    kind: str = str(fills[0].get("value", {}).get("kind", "")) if fills else "";
+    assert_eq("seg7: masked repeated input becomes secret", kind, "secret");
+    ot_steps: list[Any] = result.get("artifact", {}).get("one_time", {}).get("steps", []);
+    assert_eq("seg7: one_time has no secret fill", len(ot_steps), 0);
+}
+
+# ============================================================
+# Test 8: continuation strategy preserved in compiled output
+# ============================================================
+
+def test_seg_continuation_preserved() {
+    cont: dict[str, Any] = {
+        "strategy": [{"mode": "next_page", "options": {"max_pages": 5}}]
+    };
+    rec: dict[str, Any] = mk_segmented_recording([], [mk_click("btn-next", 0)], cont, DEFAULT_STOP_POLICY);
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg8: compiles ok", bool(result.get("ok", False)));
+    stored_cont: Any = result.get("artifact", {}).get("continuation", {});
+    strategy: list[Any] = stored_cont.get("strategy", []);
+    assert_eq("seg8: strategy has 1 entry", len(strategy), 1);
+    assert_eq("seg8: strategy mode preserved", str(strategy[0].get("mode", "")), "next_page");
+    assert_eq("seg8: strategy max_pages preserved", strategy[0].get("options", {}).get("max_pages", 0), 5);
+}
+
+# ============================================================
+# Test 9: stop policy preserved in compiled output
+# ============================================================
+
+def test_seg_stop_policy_preserved() {
+    sp: dict[str, Any] = {"mode": "after_n_successes", "options": {"count": 10}};
+    rec: dict[str, Any] = mk_segmented_recording([], [mk_click("btn-item", 0)], DEFAULT_CONTINUATION, sp);
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg9: compiles ok", bool(result.get("ok", False)));
+    stored_sp: Any = result.get("artifact", {}).get("stop_policy", {});
+    assert_eq("seg9: stop_policy mode preserved", str(stored_sp.get("mode", "")), "after_n_successes");
+    assert_eq("seg9: stop_policy count preserved", stored_sp.get("options", {}).get("count", 0), 10);
+}
+
+# ============================================================
+# Test 10: one_time and repeated segments do not leak events
+# ============================================================
+
+def test_seg_no_event_leakage() {
+    ot_click: dict[str, Any] = mk_click("btn-login", 0);
+    rep_click: dict[str, Any] = mk_click("btn-download", 0);
+    rec: dict[str, Any] = mk_segmented_recording([ot_click], [rep_click], DEFAULT_CONTINUATION, DEFAULT_STOP_POLICY);
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg10: compiles ok", bool(result.get("ok", False)));
+    art: Any = result.get("artifact", {});
+    ot_css: list[str] = [
+        str(s.get("target", {}).get("primary", {}).get("selector", ""))
+        for s in art.get("one_time", {}).get("steps", [])
+        if isinstance(s, dict) and s.get("type") == "click"
+    ];
+    rep_css: list[str] = [
+        str(s.get("target", {}).get("primary", {}).get("selector", ""))
+        for s in art.get("repeated", {}).get("steps", [])
+        if isinstance(s, dict) and s.get("type") == "click"
+    ];
+    assert_true("seg10: login click in one_time", "#btn-login" in ot_css);
+    assert_true("seg10: download click NOT in one_time", "#btn-download" not in ot_css);
+    assert_true("seg10: download click in repeated", "#btn-download" in rep_css);
+    assert_true("seg10: login click NOT in repeated", "#btn-login" not in rep_css);
+}
+
+# ============================================================
+# Test 11: validate_compiled_artifact positive and negative
+# ============================================================
+
+def test_seg_validate_artifact() {
+    rec: dict[str, Any] = mk_segmented_recording(
+        [mk_click("btn-start", 0)],
+        [mk_click("btn-item", 0)],
+        DEFAULT_CONTINUATION,
+        DEFAULT_STOP_POLICY
+    );
+    result: dict[str, Any] = compile_segmented_recording(rec, DEFAULT_OPTIONS);
+    assert_true("seg11: compile ok", bool(result.get("ok", False)));
+    v: dict[str, Any] = validate_compiled_artifact(result.get("artifact", {}));
+    assert_true("seg11: valid artifact passes validation", bool(v.get("ok", False)));
+
+    bad: dict[str, Any] = {"name": "incomplete"};
+    v_bad: dict[str, Any] = validate_compiled_artifact(bad);
+    assert_eq("seg11: bad artifact fails validation", bool(v_bad.get("ok", True)), False);
+    assert_true("seg11: error list is non-empty", len(v_bad.get("errors", [])) > 0);
+}
+
+# ============================================================
+# Test 12: flat-session dry_run path is still supported
+# ============================================================
+
+def test_old_dry_run_still_works() {
+    session: dict[str, Any] = {
+        "id": "sess_compat_1",
+        "startUrl": "https://example.com",
+        "goalContext": "Check backward compat",
+        "events": [
+            mk_nav("https://example.com/page", 0),
+            mk_click("btn-ok", 200)
+        ]
+    };
+    result: dict[str, Any] = compile_session(session, DEFAULT_OPTIONS);
+    assert_true("compat: flat compile_session still works", bool(result.get("ok", False)));
+    wf: Any = result.get("workflow", {});
+    assert_true("compat: flat workflow has steps", len(wf.get("steps", [])) > 0);
+    v: dict[str, Any] = validate_workflow(wf);
+    assert_true("compat: flat workflow passes validate_workflow", bool(v.get("ok", False)));
+}
+
+# ============================================================
 # Run all tests
 # ============================================================
 
@@ -341,6 +630,19 @@ with entry {
     test_masked_input_becomes_secret();
     test_validate_rejects_partial();
     test_infer_safety_rules();
+
+    test_seg_only_one_time();
+    test_seg_only_repeated();
+    test_seg_both_segments();
+    test_seg_one_time_steps_isolated();
+    test_seg_repeated_steps_isolated();
+    test_seg_repeated_typing_collapse();
+    test_seg_masked_repeated_input_is_secret();
+    test_seg_continuation_preserved();
+    test_seg_stop_policy_preserved();
+    test_seg_no_event_leakage();
+    test_seg_validate_artifact();
+    test_old_dry_run_still_works();
 
     print("");
     print("Results: " + str(COUNTS["passed"]) + " passed, " + str(COUNTS["failed"]) + " failed.");

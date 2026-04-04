@@ -24,6 +24,7 @@ import from urllib.parse { urlparse }
 glob DATA_ROOT: str = "./jac/layer_data";
 glob TRACE_DIR: str = DATA_ROOT + "/traces";
 glob WORKFLOW_DIR: str = DATA_ROOT + "/workflows";
+glob RECORDING_DIR: str = DATA_ROOT + "/recordings";
 glob COMPILER_VERSION: str = "0.2.0";
 glob SAFETY_PATTERNS: list[str] = [
     "submit", "confirm", "place order", "pay", "delete", "remove"
@@ -57,9 +58,6 @@ so the local-time offset is constant and cancels out.
 """
 def parse_ts(iso: str) -> float {
     try {
-        if re.match(r"^\d+(\.\d+)?$", iso) {
-            return float(iso) * 1000.0;
-        }
         s: str = iso.replace("Z", "").replace("+00:00", "");
         ms_part: float = 0.0;
         if "." in s {
@@ -107,106 +105,6 @@ def to_snake_case(s: str) -> str {
         return "value";
     }
     return s;
-}
-
-"""Return a stable event id for normalized trace events."""
-def new_event_id() -> str { return new_id("evt_"); }
-
-"""Select the best available element identity key for input correlation."""
-def element_identity_key(el: dict[str, Any]) -> str {
-    return str(
-        el.get("name", "") or
-        el.get("label", "") or
-        el.get("id", "") or
-        el.get("placeholder", "")
-    );
-}
-
-"""Map browser observation target fields into the richer compiler element shape."""
-def target_to_element(target: Any) -> dict[str, Any] {
-    if not isinstance(target, dict) {
-        return {};
-    }
-
-    text_value: str = str(target.get("text", ""));
-    role_value: str = str(target.get("role", ""));
-    tag_value: str = str(target.get("tag", ""));
-
-    return {
-        "id": str(target.get("id", "")),
-        "name": str(target.get("name", "")),
-        "label": str(target.get("label", "")),
-        "type": str(target.get("type", "")),
-        "placeholder": str(target.get("placeholder", "")),
-        "innerText": text_value,
-        "role": role_value,
-        "tag": tag_value,
-        "cssSelector": "",
-        "testId": "",
-        "nearbyText": [],
-        "sectionHeading": "",
-        "formName": "",
-        "className": str(target.get("class_name", ""))
-    };
-}
-
-"""Normalize observation event names and payload fields into compiler-ready events."""
-def normalize_observation_event(raw_event: Any) -> dict[str, Any] | None {
-    if not isinstance(raw_event, dict) {
-        return None;
-    }
-
-    raw_type: str = str(raw_event.get("type", ""));
-    event_type: str = raw_type;
-    if raw_type == "navigate" {
-        event_type = "navigation";
-    }
-
-    target: Any = raw_event.get("target", {});
-    value_text: str = str(raw_event.get("value", ""));
-
-    normalized: dict[str, Any] = {
-        "id": str(raw_event.get("id", "")) or new_event_id(),
-        "type": event_type,
-        "url": str(raw_event.get("url", "")),
-        "timestamp": str(raw_event.get("timestamp", "") or raw_event.get("recorded_at", "")),
-        "value": value_text,
-        "masked": value_text == "__redacted__",
-        "meta": raw_event.get("meta", {}) if isinstance(raw_event.get("meta", {}), dict) else {},
-        "target": target if isinstance(target, dict) else {},
-        "element": target_to_element(target)
-    };
-
-    return normalized;
-}
-
-"""Adapt persisted browser observation traces into the compiler session schema."""
-def normalize_session(session: dict[str, Any]) -> dict[str, Any] {
-    if not isinstance(session, dict) {
-        return {};
-    }
-
-    normalized_events: list[Any] = [];
-    candidate_events: Any = session.get("events", []);
-    if isinstance(candidate_events, list) {
-        for raw_event in candidate_events {
-            normalized_event: dict[str, Any] | None = normalize_observation_event(raw_event);
-            if normalized_event is not None {
-                normalized_events.append(normalized_event);
-            }
-        }
-    }
-
-    goal_context: str = str(session.get("goalContext", "") or session.get("title", ""));
-    start_url: str = str(session.get("startUrl", "") or session.get("source_url", ""));
-
-    return {
-        "id": str(session.get("id", "") or session.get("session_id", "")),
-        "goalContext": goal_context,
-        "startUrl": start_url,
-        "status": str(session.get("status", "")),
-        "events": normalized_events
-    };
 }
 
 # ============================================================
@@ -477,6 +375,18 @@ def clean_trace(session: dict[str, Any]) -> dict[str, Any] {
     };
 }
 
+"""R: Apply the three-pass cleaning pipeline to a raw event list.
+M: Runs remove_noise → merge_typing_events → collapse_duplicate_clicks on a flat list.
+E: Empty list returns empty results; wraps the same helpers used by clean_trace.
+"""
+def clean_segment_events(events: list[Any]) -> dict[str, Any] {
+    noise_result: dict[str, Any] = remove_noise(events);
+    cleaned: list[Any] = noise_result["events"];
+    cleaned = merge_typing_events(cleaned);
+    cleaned = collapse_duplicate_clicks(cleaned);
+    return {"events": cleaned, "removed": noise_result["removed"]};
+}
+
 # ============================================================
 # INFERENCE
 # ============================================================
@@ -521,7 +431,7 @@ def infer_inputs(events: list[Any]) -> list[Any] {
         if etype != "input" and etype != "change" { continue; }
         el: Any = evt.get("element", {});
         if not isinstance(el, dict) { continue; }
-        key: str = element_identity_key(el);
+        key: str = str(el.get("name", "") or el.get("label", "") or el.get("id", ""));
         if not key or key in seen { continue; }
         value: str = str(evt.get("value", ""));
         input_type: str = infer_input_type(el, value);
@@ -538,35 +448,12 @@ def infer_inputs(events: list[Any]) -> list[Any] {
             "required": True,
             "secret": is_secret,
             "sourceHint": {
-                "elementIdentityKey": key,
                 "inferredFromStepIds": [],
                 "inferenceReason": "value \"" + preview + "\" appears dynamic"
             }
         });
     }
     return inputs;
-}
-
-"""Build a lookup from element identity to generated workflow input name."""
-def input_name_lookup(inputs: list[Any]) -> dict[str, Any] {
-    lookup: dict[str, Any] = {};
-
-    for item in inputs {
-        if not isinstance(item, dict) {
-            continue;
-        }
-        source_hint: Any = item.get("sourceHint", {});
-        if not isinstance(source_hint, dict) {
-            continue;
-        }
-        identity_key: str = str(source_hint.get("elementIdentityKey", ""));
-        if not identity_key {
-            continue;
-        }
-        lookup[identity_key] = str(item.get("name", ""));
-    }
-
-    return lookup;
 }
 
 """Inject postcondition assert steps after navigation and submit events.
@@ -693,7 +580,7 @@ def build_target_spec(el: dict[str, Any], for_click: bool) -> dict[str, Any] | N
 navigation → goto | click → click | input/change → fill | annotation → None
 Returns None when no valid locator exists or the event type produces no step.
 """
-def event_to_step(event: dict[str, Any], input_names: dict[str, Any]) -> dict[str, Any] | None {
+def event_to_step(event: dict[str, Any]) -> dict[str, Any] | None {
     if not isinstance(event, dict) { return None; }
     etype: str = str(event.get("type", ""));
     step_id: str = new_step_id();
@@ -718,32 +605,15 @@ def event_to_step(event: dict[str, Any], input_names: dict[str, Any]) -> dict[st
         target = build_target_spec(el, False);
         if target is None { return None; }
         masked: bool = bool(event.get("masked", False));
-        identity_key: str = element_identity_key(el);
-        input_name: str = str(input_names.get(identity_key, ""));
-
-        step: dict[str, Any] = {
-            "id": step_id,
-            "type": "fill",
-            "target": target
-        };
-
-        if input_name {
-            step["value_source"] = "input." + input_name;
-            if masked {
-                step["secret"] = True;
-            }
-            return step;
-        }
-
-        literal_val: str = str(event.get("value", ""));
+        value_spec: dict[str, Any];
         if masked {
-            step["value"] = "";
-            step["secret"] = True;
-            return step;
+            secret_key: str = str(el.get("name", "") or el.get("label", "") or "unknown");
+            value_spec = {"kind": "secret", "secretKey": secret_key};
+        } else {
+            literal_val: str = str(event.get("value", ""));
+            value_spec = {"kind": "literal", "value": literal_val};
         }
-
-        step["value"] = literal_val;
-        return step;
+        return {"id": step_id, "type": "fill", "target": target, "value": value_spec};
     }
 
     # annotation and unrecognized types produce no step
@@ -780,13 +650,11 @@ def heuristic_compile(
     candidate: Any = cleaned.get("events", []);
     if isinstance(candidate, list) { clean_events = candidate; }
 
-    inferred_inputs: list[Any] = infer_inputs(clean_events);
-    known_input_names: dict[str, Any] = input_name_lookup(inferred_inputs);
-
     step_origins: list[Any] = [];
     steps: list[Any] = [];
+
     for evt in clean_events {
-        step: Any = event_to_step(evt, known_input_names);
+        step: Any = event_to_step(evt);
         if step is not None {
             steps.append(step);
             step_origins.append({
@@ -801,6 +669,7 @@ def heuristic_compile(
         steps.append(a);
     }
 
+    inferred_inputs: list[Any] = infer_inputs(clean_events);
     inferred_rules: list[Any] = infer_safety_rules(steps);
     domains: list[str] = collect_domains(clean_events);
 
@@ -976,6 +845,301 @@ def validate_workflow(candidate: dict[str, Any]) -> dict[str, Any] {
 }
 
 # ============================================================
+# SEGMENTED VALIDATION
+# ============================================================
+
+"""R: Validate a compiled segmented artifact against the required structural contract.
+M: Checks required top-level fields, segment blocks, continuation, stop_policy, compileInfo.
+E: Returns {ok: True, artifact} or {ok: False, errors: []}.
+   Does not validate event semantics — structural requirements only.
+"""
+def validate_compiled_artifact(candidate: dict[str, Any]) -> dict[str, Any] {
+    if not isinstance(candidate, dict) {
+        return {"ok": False, "errors": ["artifact must be a dict"]};
+    }
+    errors: list[str] = [];
+
+    required_top: list[str] = [
+        "version", "id", "name", "recording_id", "metadata",
+        "one_time", "repeated", "continuation", "stop_policy", "compileInfo"
+    ];
+    for field in required_top {
+        if field not in candidate {
+            errors.append(field + ": required field is missing");
+        }
+    }
+
+    if candidate.get("version") != "1.0" {
+        errors.append("version: must be \"1.0\"");
+    }
+
+    metadata: Any = candidate.get("metadata", {});
+    if isinstance(metadata, dict) {
+        for mf in ["createdAt", "updatedAt", "createdByUserId", "source"] {
+            if mf not in metadata {
+                errors.append("metadata." + mf + ": required field is missing");
+            }
+        }
+        source: Any = metadata.get("source", {});
+        if isinstance(source, dict) {
+            for sf in ["recordingId", "origin", "domains"] {
+                if sf not in source {
+                    errors.append("metadata.source." + sf + ": required field is missing");
+                }
+            }
+        }
+    }
+
+    for seg_name in ["one_time", "repeated"] {
+        seg: Any = candidate.get(seg_name, {});
+        if not isinstance(seg, dict) {
+            errors.append(seg_name + ": must be a dict");
+        } else {
+            if not isinstance(seg.get("inputs"), list) {
+                errors.append(seg_name + ".inputs: must be a list");
+            }
+            if not isinstance(seg.get("steps"), list) {
+                errors.append(seg_name + ".steps: must be a list");
+            }
+            if not isinstance(seg.get("annotations"), list) {
+                errors.append(seg_name + ".annotations: must be a list");
+            }
+        }
+    }
+
+    cont: Any = candidate.get("continuation", {});
+    if not isinstance(cont, dict) {
+        errors.append("continuation: must be a dict");
+    } elif not isinstance(cont.get("strategy"), list) {
+        errors.append("continuation.strategy: must be a list");
+    }
+
+    sp: Any = candidate.get("stop_policy", {});
+    if not isinstance(sp, dict) {
+        errors.append("stop_policy: must be a dict");
+    } else {
+        if "mode" not in sp {
+            errors.append("stop_policy.mode: required field is missing");
+        }
+        if "options" not in sp {
+            errors.append("stop_policy.options: required field is missing");
+        }
+    }
+
+    ci: Any = candidate.get("compileInfo", {});
+    if isinstance(ci, dict) {
+        for cf in ["compilerVersion", "compiledAt", "sourceRecordingId"] {
+            if cf not in ci {
+                errors.append("compileInfo." + cf + ": required field is missing");
+            }
+        }
+    }
+
+    if errors {
+        return {"ok": False, "errors": errors};
+    }
+    return {"ok": True, "artifact": candidate};
+}
+
+# ============================================================
+# SEGMENTED COMPILER
+# ============================================================
+
+"""R: Compile one recording segment into a compiled block using existing heuristics.
+M: Cleans events independently, maps to steps, infers inputs/assertions/safety.
+E: Empty events produce a structurally valid block with empty lists.
+   label ("one_time" or "repeated") is used only in warning messages.
+"""
+def compile_one_segment(
+    events: list[Any],
+    annotations: list[Any],
+    label: str
+) -> dict[str, Any] {
+    clean_result: dict[str, Any] = clean_segment_events(events);
+    clean_events: list[Any] = clean_result["events"];
+    removed: list[Any] = clean_result["removed"];
+
+    steps: list[Any] = [];
+    step_origins: list[Any] = [];
+
+    for evt in clean_events {
+        step: Any = event_to_step(evt);
+        if step is not None {
+            steps.append(step);
+            step_origins.append({
+                "stepId": str(step.get("id", "")),
+                "sourceEventIds": [str(evt.get("id", ""))]
+            });
+        }
+    }
+
+    for a in infer_assertions(clean_events) {
+        steps.append(a);
+    }
+
+    seg_inputs: list[Any] = infer_inputs(clean_events);
+    seg_safety: list[Any] = infer_safety_rules(steps);
+
+    seg_warnings: list[str] = [];
+    for r in removed {
+        if isinstance(r, dict) {
+            seg_warnings.append(
+                label + ": removed event " + str(r.get("id", "")) +
+                ": " + str(r.get("reason", ""))
+            );
+        }
+    }
+
+    safe_anns: list[Any] = [];
+    if isinstance(annotations, list) {
+        safe_anns = annotations;
+    }
+
+    return {
+        "inputs": seg_inputs,
+        "steps": steps,
+        "annotations": safe_anns,
+        "safety_rules": seg_safety,
+        "step_origins": step_origins,
+        "warnings": seg_warnings
+    };
+}
+
+"""R: Compile a finished segmented recording into a CompiledArtifact.
+M: Compiles one_time and repeated segments independently, carries through
+   continuation and stop_policy unchanged, validates the assembled artifact.
+E: Recordings not in 'finished' state produce a warning but still compile.
+   Empty segments produce structurally valid empty blocks.
+   Returns {ok, artifact, warnings} or {ok: False, errors, warnings}.
+"""
+def compile_segmented_recording(
+    recording: dict[str, Any],
+    options: dict[str, Any]
+) -> dict[str, Any] {
+    warnings: list[str] = [];
+
+    recording_id: str = str(recording.get("recording_id", ""));
+    task_name: str = str(recording.get("task_name", ""));
+    state: str = str(recording.get("state", ""));
+
+    if state != "finished" {
+        warnings.append("recording state is '" + state + "' (expected 'finished')");
+    }
+
+    segments: Any = recording.get("segments", {});
+    if not isinstance(segments, dict) { segments = {}; }
+
+    one_time_seg: Any = segments.get("one_time", {});
+    if not isinstance(one_time_seg, dict) { one_time_seg = {}; }
+    ot_events: list[Any] = [];
+    raw_ot: Any = one_time_seg.get("events", []);
+    if isinstance(raw_ot, list) { ot_events = raw_ot; }
+    ot_anns: list[Any] = [];
+    raw_ot_anns: Any = one_time_seg.get("annotations", []);
+    if isinstance(raw_ot_anns, list) { ot_anns = raw_ot_anns; }
+
+    repeated_seg: Any = segments.get("repeated", {});
+    if not isinstance(repeated_seg, dict) { repeated_seg = {}; }
+    rep_events: list[Any] = [];
+    raw_rep: Any = repeated_seg.get("events", []);
+    if isinstance(raw_rep, list) { rep_events = raw_rep; }
+    rep_anns: list[Any] = [];
+    raw_rep_anns: Any = repeated_seg.get("annotations", []);
+    if isinstance(raw_rep_anns, list) { rep_anns = raw_rep_anns; }
+
+    compiled_ot: dict[str, Any] = compile_one_segment(ot_events, ot_anns, "one_time");
+    compiled_rep: dict[str, Any] = compile_one_segment(rep_events, rep_anns, "repeated");
+
+    for w in compiled_ot.get("warnings", []) { warnings.append(w); }
+    for w in compiled_rep.get("warnings", []) { warnings.append(w); }
+
+    continuation: Any = recording.get("continuation", {"strategy": []});
+    if not isinstance(continuation, dict) {
+        continuation = {"strategy": []};
+        warnings.append("continuation was not a dict; replaced with empty strategy");
+    }
+
+    stop_policy: Any = recording.get("stop_policy", {"mode": "", "options": {}});
+    if not isinstance(stop_policy, dict) {
+        stop_policy = {"mode": "", "options": {}};
+        warnings.append("stop_policy was not a dict; replaced with empty policy");
+    }
+
+    meta: Any = recording.get("meta", {});
+    if not isinstance(meta, dict) { meta = {}; }
+    start_url: str = str(meta.get("start_url", ""));
+    domains: list[Any] = [];
+    raw_domains: Any = meta.get("domains", []);
+    if isinstance(raw_domains, list) { domains = raw_domains; }
+    user_goal: str = str(meta.get("user_goal", ""));
+
+    if not domains {
+        all_events: list[Any] = ot_events + rep_events;
+        domains = collect_domains(all_events);
+    }
+
+    created_by: str = str(options.get("createdByUserId", ""));
+    now: str = timestamp_now();
+
+    wf_name: str = task_name;
+    if not wf_name { wf_name = user_goal; }
+    if not wf_name { wf_name = "Untitled workflow"; }
+
+    artifact: dict[str, Any] = {
+        "version": "1.0",
+        "id": new_workflow_id(),
+        "name": wf_name,
+        "recording_id": recording_id,
+        "metadata": {
+            "createdAt": now,
+            "updatedAt": now,
+            "createdByUserId": created_by,
+            "source": {
+                "recordingId": recording_id,
+                "origin": "segmented-recording",
+                "startUrl": start_url,
+                "domains": domains
+            }
+        },
+        "one_time": {
+            "inputs": compiled_ot["inputs"],
+            "steps": compiled_ot["steps"],
+            "annotations": compiled_ot["annotations"],
+            "safety_rules": compiled_ot["safety_rules"]
+        },
+        "repeated": {
+            "inputs": compiled_rep["inputs"],
+            "steps": compiled_rep["steps"],
+            "annotations": compiled_rep["annotations"],
+            "safety_rules": compiled_rep["safety_rules"]
+        },
+        "continuation": continuation,
+        "stop_policy": stop_policy,
+        "compileInfo": {
+            "compilerVersion": COMPILER_VERSION,
+            "compiledAt": now,
+            "sourceRecordingId": recording_id,
+            "stepOrigins": {
+                "one_time": compiled_ot.get("step_origins", []),
+                "repeated": compiled_rep.get("step_origins", [])
+            },
+            "warnings": warnings
+        }
+    };
+
+    validation: dict[str, Any] = validate_compiled_artifact(artifact);
+    if not bool(validation.get("ok", False)) {
+        return {
+            "ok": False,
+            "errors": validation.get("errors", []),
+            "warnings": warnings
+        };
+    }
+
+    return {"ok": True, "artifact": artifact, "warnings": warnings};
+}
+
+# ============================================================
 # SESSION ORCHESTRATOR
 # ============================================================
 
@@ -990,17 +1154,9 @@ def compile_session(
     options: dict[str, Any]
 ) -> dict[str, Any] {
     warnings: list[str] = [];
-    normalized_session: dict[str, Any] = normalize_session(session);
-    if not normalized_session {
-        return {
-            "ok": False,
-            "errors": ["session normalization failed"],
-            "warnings": warnings
-        };
-    }
 
     # 1. Clean
-    cleaned: dict[str, Any] = clean_trace(normalized_session);
+    cleaned: dict[str, Any] = clean_trace(session);
     for r in cleaned.get("removedEventIds", []) {
         if isinstance(r, dict) {
             warnings.append(
@@ -1010,7 +1166,7 @@ def compile_session(
     }
 
     # 2. Heuristic compile
-    partial: dict[str, Any] = heuristic_compile(normalized_session, cleaned, options);
+    partial: dict[str, Any] = heuristic_compile(session, cleaned, options);
 
     # 3. Optional model enrichment (caller injects via model_fn)
     model_fn: Any = options.get("model_fn", None);
@@ -1020,7 +1176,7 @@ def compile_session(
 
     if model_fn is not None and allow_llm {
         try {
-            model_result: Any = model_fn(normalized_session, cleaned, options);
+            model_result: Any = model_fn(session, cleaned, options);
             if isinstance(model_result, dict) {
                 partial = merge_model_result(partial, model_result);
             }
@@ -1141,15 +1297,98 @@ def dry_run_compile(payload: dict[str, Any]) -> dict[str, Any] {
     return result;
 }
 
+"""R: Dry-run compile a segmented recording from an inline dict without persisting.
+M: Expects payload.recording with recording_id and segments; delegates to compile_segmented_recording.
+E: Returns {ok, artifact, warnings} or {ok: False, error}.
+"""
+def dry_run_compile_segmented(payload: dict[str, Any]) -> dict[str, Any] {
+    recording: Any = payload.get("recording", {});
+    if not isinstance(recording, dict) or not recording.get("recording_id") {
+        return {"ok": False, "error": "payload.recording with recording_id is required"};
+    }
+
+    options: dict[str, Any] = {
+        "createdByUserId": str(payload.get("created_by", "dry_run")),
+        "privacy": {
+            "mode": "local",
+            "llmUsage": {
+                "allowDuringCompile": False,
+                "allowDuringRepair": False,
+                "allowRawDomInRepair": False
+            }
+        }
+    };
+
+    return compile_segmented_recording(recording, options);
+}
+
+"""R: Build command for segmented recordings: load from disk, compile, and persist the artifact.
+M: Reads recording JSON from RECORDING_DIR, compiles via compile_segmented_recording, writes artifact to WORKFLOW_DIR.
+E: Fails if recording_id is missing or the recording file is not found.
+"""
+def build_segmented(payload: dict[str, Any]) -> dict[str, Any] {
+    ensure_workflow_dir();
+
+    recording_id: str = str(payload.get("recording_id", ""));
+    if not recording_id {
+        return {"ok": False, "error": "recording_id is required"};
+    }
+
+    rec_path: str = RECORDING_DIR + "/" + recording_id + ".json";
+    recording_data: dict[str, Any] = read_json(rec_path);
+    if not recording_data {
+        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
+    }
+
+    created_by: str = str(payload.get("created_by", "cli"));
+    options: dict[str, Any] = {
+        "createdByUserId": created_by,
+        "privacy": {
+            "mode": "local",
+            "llmUsage": {
+                "allowDuringCompile": False,
+                "allowDuringRepair": False,
+                "allowRawDomInRepair": False
+            }
+        }
+    };
+
+    result: dict[str, Any] = compile_segmented_recording(recording_data, options);
+    if not bool(result.get("ok", False)) {
+        return {
+            "ok": False,
+            "error": "segmented compilation failed",
+            "errors": result.get("errors", []),
+            "warnings": result.get("warnings", [])
+        };
+    }
+
+    artifact: dict[str, Any] = result["artifact"];
+    artifact_id: str = str(artifact.get("id", "wf_unknown"));
+    artifact_path: str = workflow_file(artifact_id);
+    write_json(artifact_path, artifact);
+
+    return {
+        "ok": True,
+        "artifact_id": artifact_id,
+        "artifact_file": artifact_path,
+        "one_time_step_count": len(artifact.get("one_time", {}).get("steps", [])),
+        "repeated_step_count": len(artifact.get("repeated", {}).get("steps", [])),
+        "warnings": result.get("warnings", [])
+    };
+}
+
 """Route a CLI command to the appropriate handler."""
 def dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any] {
     if command == "build" { return build_workflow(payload); }
     if command == "get" { return get_workflow(payload); }
     if command == "dry_run" { return dry_run_compile(payload); }
+    if command == "build_segmented" { return build_segmented(payload); }
+    if command == "dry_run_segmented" { return dry_run_compile_segmented(payload); }
     return {
         "ok": False,
         "error": "unknown command",
-        "valid_commands": ["build", "get", "dry_run"]
+        "valid_commands": ["build", "get", "dry_run", "build_segmented", "dry_run_segmented"]
     };
 }
 

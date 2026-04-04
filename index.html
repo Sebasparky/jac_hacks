@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jac Browser</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="browser-chrome">
+        <div class="drag-region" aria-hidden="true"></div>
+        <div class="tab-strip">
+          <div class="tab active">
+            <span class="tab-dot"></span>
+            <span id="tabTitle" class="tab-title">New Tab</span>
+          </div>
+          <div class="window-controls">
+            <button id="minBtn" class="window-btn" title="Minimize">&#8211;</button>
+            <button id="maxBtn" class="window-btn" title="Maximize">&#9723;</button>
+            <button id="closeBtn" class="window-btn danger" title="Close">&#10005;</button>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <div class="nav-group">
+            <button id="backBtn" class="icon-btn" title="Back">&#8592;</button>
+            <button id="forwardBtn" class="icon-btn" title="Forward">&#8594;</button>
+            <button id="reloadBtn" class="icon-btn" title="Reload">&#8635;</button>
+          </div>
+
+          <form id="navForm" class="omnibox-wrap">
+            <span id="siteBadge" class="site-badge">Secure</span>
+            <input
+              id="addressInput"
+              class="address-input"
+              type="text"
+              placeholder="Search or enter address"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="goBtn" class="go-btn" type="submit">Go</button>
+          </form>
+        </div>
+
+        <div class="progress-track">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+      </header>
+
+      <main class="viewport">
+        <webview
+          id="browserView"
+          class="browser-view"
+          src="https://example.com"
+          allowpopups
+        ></webview>
+      </main>
+
+      <aside class="layer-panel">
+        <div class="layer-panel-header">Layer Dev</div>
+        <div class="layer-panel-actions">
+          <button id="startTraceBtn" class="layer-btn">Start Trace</button>
+          <button id="stopTraceBtn" class="layer-btn">Stop Trace</button>
+          <button id="compileTraceBtn" class="layer-btn">Compile</button>
+          <button id="planWorkflowBtn" class="layer-btn">Plan</button>
+        </div>
+        <div class="layer-panel-state">
+          <div>Session: <span id="sessionIdLabel">none</span></div>
+          <div>Workflow: <span id="workflowIdLabel">none</span></div>
+        </div>
+        <pre id="layerLog" class="layer-log">Layer pipeline ready.</pre>
+      </aside>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

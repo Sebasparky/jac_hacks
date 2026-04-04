@@ -62,7 +62,7 @@ Instead of asking an AI agent to reason from scratch on every click, this projec
 - [ ] Implement execution engine for basic replay actions.
 - [ ] LLM step generation/editing with provider-agnostic model config.
 - [ ] Minimal UI for record, inspect, edit, and run.
-- [ ] Hackathon-first implementation in Electron shell (not full browser engine work).
+- [ ] Hackathon-first implementation in Electron runtime (Jac-authored source only).
 
 ### Out of Scope (Later or Never)
 - [ ] Team multi-tenant RBAC and enterprise admin features.
@@ -76,7 +76,7 @@ Instead of asking an AI agent to reason from scratch on every click, this projec
 - [ ] Create first Jac modules and project structure.
 - [ ] Build telemetry capture prototype (events + serialization).
 - [ ] Establish provider configuration path (`MODEL`, API keys, local model option).
-- [ ] Scaffold Electron shell with split UI (browser pane + workflow side panel).
+- [ ] Build Jac launcher + Electron runtime wiring with no hand-written JS source files.
 
 ### Milestone 2: Core Features
 - [ ] Task recorder MVP (start/stop, action timeline, save task).
@@ -97,7 +97,8 @@ Instead of asking an AI agent to reason from scratch on every click, this projec
 - Primary language: Jac
 - Supporting libraries/tools: Python libraries allowed when needed.
 - AI backend tooling: `jac-coder`/`jac-mcp` capable environment (optional for IDE workflows).
-- App shell (hackathon): Electron + TypeScript/React.
+- App runtime (hackathon): Electron shell with Jac-backed URL normalization (`jac/browser_core.jac`).
+- Source policy: Jac-only authored code; no hand-written JavaScript files.
 - Replay engine: Playwright-style deterministic browser actions and resilient locators.
 
 ### Architecture Notes
@@ -141,16 +142,25 @@ Replay deterministically at machine speed. Only invoke LLM when confidence drops
 ## Developer Workflow
 ### Local Setup
 ```bash
-# install JS deps (current repo)
+# install deps
 npm install
 
-# start jac-coder server (optional helper tooling)
-npm run jac-coder
+# launch browser runtime (Jac launcher -> Electron)
+npm start
 
 # verify jac and mcp availability
 jac --version
 jac mcp --inspect
 ```
+
+### Layer Scaffolding
+- Observation API: `jac/layers/observation.jac`
+- Compilation API: `jac/layers/compilation.jac`
+- Execution API: `jac/layers/execution.jac`
+- Handoff guide: `docs/LAYER_HANDOFF.md`
+- Current readiness:
+  - `npm run layers:check` passes
+  - Layer flow works via CLI: `start -> append -> stop -> build -> plan`
 
 ### Coding Standards
 - Keep code simple, skimmable, and easy to maintain.
@@ -195,7 +205,7 @@ jac mcp --inspect
 - 2026-04-04: Python libraries allowed for integrations -> preserve flexibility without diluting core stack.
 - 2026-04-04: Start with human-reviewed automation generation -> prioritize safety and trust in early versions.
 - 2026-04-04: Product wedge set to "teach once, replay many" -> differentiate from general browser agents.
-- 2026-04-04: Hackathon build path favors Electron shell + deterministic replay -> maximize demo feasibility.
+- 2026-04-04: Jac-only source policy enforced -> Electron is runtime only, no hand-written JS files.
 
 ## License
 TBD (recommend choosing MIT or Apache-2.0 before first public release).

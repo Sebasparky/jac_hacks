@@ -1,0 +1,6 @@
+{
+  "default_model": "gpt-5.2-2025-12-11",
+  "temperature": 0.2,
+  "max_tokens": 16384,
+  "max_react_iterations": 30
+}

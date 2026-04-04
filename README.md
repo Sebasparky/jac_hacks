@@ -148,6 +148,12 @@ npm install
 # launch browser runtime (Jac launcher -> Electron)
 npm start
 
+# launch Jac-authored client migration shell
+npm run jac:web
+
+# build Jac-authored client bundle
+npm run jac:build
+
 # verify jac and mcp availability
 jac --version
 jac mcp --inspect
@@ -158,9 +164,18 @@ jac mcp --inspect
 - Compilation API: `jac/layers/compilation.jac`
 - Execution API: `jac/layers/execution.jac`
 - Handoff guide: `docs/LAYER_HANDOFF.md`
+- Jac client entrypoint: `main.jac`
+- Jac client UI components: `components/*.cl.jac`
 - Current readiness:
   - `npm run layers:check` passes
   - Layer flow works via CLI: `start -> append -> stop -> build -> plan`
+  - Dev A baseline shipped:
+    - multi-tab shell with new/switch/close behavior
+    - in-page event capture and network metadata via webview preload
+    - observation schema validation, dedupe, and sensitive-value redaction
+  - Jac migration path shipped:
+    - `jac-client` enabled in the local `jac` toolchain
+    - `jac build main.jac` produces a client bundle from Jac-authored UI
 
 ### Coding Standards
 - Keep code simple, skimmable, and easy to maintain.

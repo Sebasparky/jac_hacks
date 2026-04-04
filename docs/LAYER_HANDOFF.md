@@ -12,6 +12,20 @@
   - Stop trace
   - Compile trace into workflow
   - Plan workflow execution (dry-run)
+- Dev A implementation now includes:
+  - Multi-tab UI with create/switch/close events
+  - In-page observation capture via `webview_preload.js`:
+    - click, input, submit, page_ready events
+    - network metadata for `fetch` and `XMLHttpRequest`
+  - Observation hardening in Jac:
+    - schema normalization/validation
+    - sensitive input redaction
+    - duplicate-event suppression
+- Jac migration groundwork now includes:
+  - `jac-client` enabled in the installed `jac` toolchain
+  - Jac-authored client entrypoint in `main.jac`
+  - Jac-authored UI components in `components/`
+  - `jac build main.jac` producing a client bundle successfully
 - Check status:
   - `jac check` passes for browser core + all three layer files.
   - `npm run layers:check` passes.
@@ -54,10 +68,11 @@ jac run jac/layers/execution.jac dry_run '{"workflow_id":"wf_<id>","inputs":{"qu
 
 ## Suggested Split For Two Developers
 Dev A (Observation + Runtime capture):
-- Expand event capture beyond chrome controls:
-  - In-page click/input capture from `webview`
-  - Optional network metadata collection
-- Improve event schema and validation in observation layer.
+- Extend capture fidelity:
+  - add scroll/selection/context-menu signals where useful
+  - add lightweight DOM neighborhood context for selectors
+- Add batching/flush strategy for high-volume network events.
+- Add replay-focused event quality scoring for compiler hints.
 
 Dev B (Compilation + Execution):
 - Improve compiler heuristics for robust selectors and dedupe.

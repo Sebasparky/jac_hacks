@@ -6,13 +6,64 @@ import from typing { Any }
 
 glob DATA_ROOT: str = "./jac/layer_data";
 glob TRACE_DIR: str = DATA_ROOT + "/traces";
+glob DEDUPE_WINDOW_SECONDS: float = 0.7;
 
-"""R: Return a simple timestamp string for persisted layer records.
+glob ALLOWED_EVENT_TYPES: list[str] = [
+    "navigate",
+    "click",
+    "input",
+    "submit",
+    "network",
+    "page_ready",
+    "tab_created",
+    "tab_closed",
+    "tab_switched",
+    "unknown"
+];
+
+glob SENSITIVE_HINTS: list[str] = [
+    "password",
+    "passcode",
+    "token",
+    "secret",
+    "auth",
+    "session",
+    "cookie",
+    "credit",
+    "card",
+    "ssn"
+];
+
+"""R: Return a timestamp string for persisted layer records.
 M: Uses `time.time()` and string-casts for broad Jac compatibility.
 E: Resolution is seconds with fractional precision.
 """
 def timestamp_now() -> str {
     return str(time.time());
+}
+
+"""R: Coerce values to bounded strings for safe trace persistence.
+M: String-casts, trims, and caps length to avoid oversized events.
+E: None maps to empty string.
+"""
+def safe_str(value: Any, max_len: int) -> str {
+    text = str(value or "").strip();
+    if len(text) > max_len {
+        return text[:max_len];
+    }
+    return text;
+}
+
+"""R: Parse a float from arbitrary input.
+M: Attempts `float(raw)` and falls back to zero on invalid values.
+E: Invalid numbers return 0.0.
+"""
+def safe_float(raw: Any) -> float {
+    try {
+        return float(raw);
+    } except ValueError {
+        return 0.0;
+    }
 }
 
 """R: Ensure observation trace storage path exists.
@@ -21,6 +72,26 @@ E: Safe to call repeatedly.
 """
 def ensure_trace_dir() {
     os.makedirs(TRACE_DIR, exist_ok=True);
+}
+
+"""R: Validate session id format for filesystem-safe trace names.
+M: Allows letters, digits, `_`, and `-`.
+E: Empty ids are invalid.
+"""
+def is_valid_session_id(session_id: str) -> bool {
+    if not session_id {
+        return False;
+    }
+
+    for char in session_id {
+        is_lower = (char >= "a") and (char <= "z");
+        is_upper = (char >= "A") and (char <= "Z");
+        is_digit = (char >= "0") and (char <= "9");
+        if not (is_lower or is_upper or is_digit or char == "_" or char == "-") {
+            return False;
+        }
+    }
+    return True;
 }
 
 """R: Parse JSON payload passed via CLI args.
@@ -97,37 +168,138 @@ def new_session_id() -> str {
     return "sess_" + str(time.time()).replace(".", "");
 }
 
-"""R: Convert untyped event payloads into normalized observation events.
-M: Copies only supported fields and enforces string/dict defaults.
-E: Unknown event types are preserved as `unknown`.
+"""R: Check whether an event type is in the allowed schema.
+M: Uses fixed allow-list used by the observation layer.
+E: Unknown types are treated as invalid.
+"""
+def is_allowed_event_type(event_type: str) -> bool {
+    return event_type in ALLOWED_EVENT_TYPES;
+}
+
+"""R: Normalize target payload to stable string fields.
+M: Copies supported target keys with bounded string lengths.
+E: Missing/non-dict targets produce empty defaults.
+"""
+def normalize_target(raw_target: Any) -> dict[str, str] {
+    target: dict[str, str] = {
+        "tag": "",
+        "id": "",
+        "name": "",
+        "role": "",
+        "type": "",
+        "label": "",
+        "text": "",
+        "placeholder": "",
+        "class_name": ""
+    };
+
+    if not isinstance(raw_target, dict) {
+        return target;
+    }
+
+    target["tag"] = safe_str(raw_target.get("tag", ""), 60).lower();
+    target["id"] = safe_str(raw_target.get("id", ""), 120);
+    target["name"] = safe_str(raw_target.get("name", ""), 120);
+    target["role"] = safe_str(raw_target.get("role", ""), 80).lower();
+    target["type"] = safe_str(raw_target.get("type", ""), 40).lower();
+    target["label"] = safe_str(raw_target.get("label", ""), 140);
+    target["text"] = safe_str(raw_target.get("text", ""), 180);
+    target["placeholder"] = safe_str(raw_target.get("placeholder", ""), 140);
+    target["class_name"] = safe_str(raw_target.get("class_name", ""), 220);
+
+    return target;
+}
+
+"""R: Normalize metadata payload for consistent analytics fields.
+M: Copies known metadata keys and string/number coercions.
+E: Unknown metadata keys are dropped for schema stability.
+"""
+def normalize_meta(raw_meta: Any) -> dict[str, Any] {
+    normalized: dict[str, Any] = {
+        "source": "",
+        "trigger": "",
+        "tab_id": "",
+        "kind": "",
+        "method": "",
+        "request_url": "",
+        "status": 0,
+        "ok": False,
+        "duration_ms": 0,
+        "error": ""
+    };
+
+    if not isinstance(raw_meta, dict) {
+        return normalized;
+    }
+
+    normalized["source"] = safe_str(raw_meta.get("source", ""), 60);
+    normalized["trigger"] = safe_str(raw_meta.get("trigger", ""), 60);
+    normalized["tab_id"] = safe_str(raw_meta.get("tab_id", ""), 80);
+    normalized["kind"] = safe_str(raw_meta.get("kind", ""), 40);
+    normalized["method"] = safe_str(raw_meta.get("method", ""), 20).upper();
+    normalized["request_url"] = safe_str(raw_meta.get("request_url", ""), 300);
+    normalized["status"] = int(raw_meta.get("status", 0));
+    normalized["ok"] = bool(raw_meta.get("ok", False));
+    normalized["duration_ms"] = int(raw_meta.get("duration_ms", 0));
+    normalized["error"] = safe_str(raw_meta.get("error", ""), 160);
+
+    return normalized;
+}
+
+"""R: Determine if target hints suggest sensitive field content.
+M: Checks target type and common secret-related label/name patterns.
+E: Heuristic may over-redact ambiguous fields.
+"""
+def is_sensitive_target(target: dict[str, str]) -> bool {
+    if target["type"] == "password" {
+        return True;
+    }
+
+    haystack = (
+        target["label"] + " " + target["name"] + " " + target["id"] + " " + target["placeholder"]
+    ).lower();
+
+    for hint in SENSITIVE_HINTS {
+        if hint in haystack {
+            return True;
+        }
+    }
+
+    return False;
+}
+
+"""R: Convert untyped payloads into normalized observation events.
+M: Enforces schema for type/url/target/meta and redacts sensitive values.
+E: Unknown types are stored as `unknown`.
 """
 def normalize_event(raw_event: Any, default_url: str) -> dict[str, Any] {
     event_type: str = "unknown";
-    event_url: str = default_url;
+    event_url: str = safe_str(default_url, 300);
     event_value: str = "";
-    target: dict[str, Any] = {};
-    meta: dict[str, Any] = {};
+    target: dict[str, str] = normalize_target({});
+    meta: dict[str, Any] = normalize_meta({});
 
     if isinstance(raw_event, dict) {
-        if raw_event.get("type", "") {
-            event_type = str(raw_event.get("type", ""));
+        event_type_candidate = safe_str(raw_event.get("type", ""), 40).lower();
+        if is_allowed_event_type(event_type_candidate) {
+            event_type = event_type_candidate;
         }
-        if raw_event.get("url", "") {
-            event_url = str(raw_event.get("url", ""));
+
+        raw_url = safe_str(raw_event.get("url", ""), 300);
+        if raw_url {
+            event_url = raw_url;
         }
+
+        target = normalize_target(raw_event.get("target", {}));
+        meta = normalize_meta(raw_event.get("meta", {}));
+
         if "value" in raw_event {
-            event_value = str(raw_event.get("value", ""));
+            event_value = safe_str(raw_event.get("value", ""), 300);
         }
+    }
 
-        raw_target = raw_event.get("target", {});
-        if isinstance(raw_target, dict) {
-            target = raw_target;
-        }
-
-        raw_meta = raw_event.get("meta", {});
-        if isinstance(raw_meta, dict) {
-            meta = raw_meta;
-        }
+    if is_sensitive_target(target) {
+        event_value = "__redacted__";
     }
 
     return {
@@ -140,6 +312,53 @@ def normalize_event(raw_event: Any, default_url: str) -> dict[str, Any] {
     };
 }
 
+"""R: Build a stable comparison signature for event dedupe.
+M: Concatenates key event fields likely to indicate duplicate actions.
+E: Signature intentionally ignores timestamp and minor non-core metadata.
+"""
+def event_signature(event_data: dict[str, Any]) -> str {
+    target = normalize_target(event_data.get("target", {}));
+    meta = normalize_meta(event_data.get("meta", {}));
+
+    return (
+        safe_str(event_data.get("type", ""), 40) + "|" +
+        safe_str(event_data.get("url", ""), 300) + "|" +
+        safe_str(event_data.get("value", ""), 300) + "|" +
+        target["tag"] + "|" +
+        target["id"] + "|" +
+        target["name"] + "|" +
+        target["role"] + "|" +
+        target["type"] + "|" +
+        target["label"] + "|" +
+        target["text"] + "|" +
+        meta["source"] + "|" +
+        meta["trigger"] + "|" +
+        meta["tab_id"] + "|" +
+        meta["kind"] + "|" +
+        meta["method"] + "|" +
+        meta["request_url"] + "|" +
+        str(meta["status"])
+    );
+}
+
+"""R: Detect near-identical adjacent events to reduce trace noise.
+M: Compares normalized signatures and timestamp delta.
+E: Returns false when timestamps are missing or unparsable.
+"""
+def is_duplicate_event(last_event: dict[str, Any], new_event: dict[str, Any]) -> bool {
+    last_time = safe_float(last_event.get("recorded_at", "0"));
+    new_time = safe_float(new_event.get("recorded_at", "0"));
+    if last_time <= 0.0 or new_time <= 0.0 {
+        return False;
+    }
+
+    if abs(new_time - last_time) > DEDUPE_WINDOW_SECONDS {
+        return False;
+    }
+
+    return event_signature(last_event) == event_signature(new_event);
+}
+
 """R: Start a new observation recording session.
 M: Builds initial trace payload and persists it to disk.
 E: Optional `session_id` can overwrite an existing session file.
@@ -147,13 +366,17 @@ E: Optional `session_id` can overwrite an existing session file.
 def start_trace(payload: dict[str, Any]) -> dict[str, Any] {
     ensure_trace_dir();
 
-    session_id = str(payload.get("session_id", ""));
+    session_id = safe_str(payload.get("session_id", ""), 120);
     if not session_id {
         session_id = new_session_id();
     }
 
-    title = str(payload.get("title", "Manual Trace"));
-    source_url = str(payload.get("url", ""));
+    if not is_valid_session_id(session_id) {
+        return {"ok": False, "error": "invalid session_id format"};
+    }
+
+    title = safe_str(payload.get("title", "Manual Trace"), 140);
+    source_url = safe_str(payload.get("url", ""), 300);
 
     trace_data = {
         "session_id": session_id,
@@ -175,13 +398,16 @@ def start_trace(payload: dict[str, Any]) -> dict[str, Any] {
 }
 
 """R: Append one event to an active observation session.
-M: Loads trace file, normalizes event payload, and rewrites JSON.
+M: Loads trace file, normalizes payload, dedupes noise, and rewrites JSON.
 E: Missing session id or trace file returns explicit errors.
 """
 def append_trace_event(payload: dict[str, Any]) -> dict[str, Any] {
-    session_id = str(payload.get("session_id", ""));
+    session_id = safe_str(payload.get("session_id", ""), 120);
     if not session_id {
         return {"ok": False, "error": "session_id is required"};
+    }
+    if not is_valid_session_id(session_id) {
+        return {"ok": False, "error": "invalid session_id format"};
     }
 
     trace_data = read_trace(session_id);
@@ -195,9 +421,20 @@ def append_trace_event(payload: dict[str, Any]) -> dict[str, Any] {
         events = raw_events;
     }
 
-    normalized = normalize_event(payload.get("event", {}), str(trace_data.get("source_url", "")));
-    events.append(normalized);
+    normalized = normalize_event(payload.get("event", {}), safe_str(trace_data.get("source_url", ""), 300));
 
+    if events and isinstance(events[-1], dict) and is_duplicate_event(events[-1], normalized) {
+        trace_data["updated_at"] = timestamp_now();
+        write_trace(session_id, trace_data);
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "event_count": len(events),
+            "deduped": True
+        };
+    }
+
+    events.append(normalized);
     trace_data["events"] = events;
     trace_data["updated_at"] = timestamp_now();
     write_trace(session_id, trace_data);
@@ -205,7 +442,8 @@ def append_trace_event(payload: dict[str, Any]) -> dict[str, Any] {
     return {
         "ok": True,
         "session_id": session_id,
-        "event_count": len(events)
+        "event_count": len(events),
+        "deduped": False
     };
 }
 
@@ -214,9 +452,12 @@ M: Loads trace by id, updates status fields, and saves file.
 E: Safe to call more than once for the same session.
 """
 def stop_trace(payload: dict[str, Any]) -> dict[str, Any] {
-    session_id = str(payload.get("session_id", ""));
+    session_id = safe_str(payload.get("session_id", ""), 120);
     if not session_id {
         return {"ok": False, "error": "session_id is required"};
+    }
+    if not is_valid_session_id(session_id) {
+        return {"ok": False, "error": "invalid session_id format"};
     }
 
     trace_data = read_trace(session_id);
@@ -247,9 +488,12 @@ M: Loads trace JSON and returns the parsed dict.
 E: Missing sessions return explicit errors.
 """
 def get_trace(payload: dict[str, Any]) -> dict[str, Any] {
-    session_id = str(payload.get("session_id", ""));
+    session_id = safe_str(payload.get("session_id", ""), 120);
     if not session_id {
         return {"ok": False, "error": "session_id is required"};
+    }
+    if not is_valid_session_id(session_id) {
+        return {"ok": False, "error": "invalid session_id format"};
     }
 
     trace_data = read_trace(session_id);

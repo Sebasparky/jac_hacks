@@ -1,13 +1,114 @@
 const path = require("path");
+const fs = require("fs");
+const { pathToFileURL } = require("url");
 const { execFile } = require("child_process");
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 
 const JAC_SCRIPT_PATH = path.join(__dirname, "jac", "browser_core.jac");
+const WEBVIEW_PRELOAD_URL = pathToFileURL(path.join(__dirname, "webview_preload.js")).toString();
 const OBSERVATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "observation.jac");
 const COMPILATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "compilation.jac");
 const EXECUTION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "execution.jac");
+const CLIENT_INDEX_PATH = path.join(__dirname, ".jac", "client", "dist", "index.html");
 const DEFAULT_URL = "https://example.com";
 const RESTORE_BOUNDS = new WeakMap();
+const URL_CACHE_TTL_MS = 5 * 60 * 1000;
+const URL_CACHE_LIMIT = 160;
+const NORMALIZED_URL_CACHE = new Map();
+const NORMALIZED_URL_INFLIGHT = new Map();
+
+/**
+ * R: Build a stable cache key for URL normalization requests.
+ * M: Trims free-form input so visually identical requests share one entry.
+ * E: Empty and null-like values collapse to the empty-string home key.
+ */
+function getNormalizedUrlCacheKey(rawInput = "") {
+  return String(rawInput || "").trim();
+}
+
+/**
+ * R: Read one cached normalized URL if it is still fresh.
+ * M: Checks expiry, refreshes insertion order for hot entries, and returns the URL.
+ * E: Expired or missing entries return null and are removed eagerly.
+ */
+function readNormalizedUrlCache(cacheKey) {
+  const cached = NORMALIZED_URL_CACHE.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+
+  if (Date.now() - cached.createdAt > URL_CACHE_TTL_MS) {
+    NORMALIZED_URL_CACHE.delete(cacheKey);
+    return null;
+  }
+
+  NORMALIZED_URL_CACHE.delete(cacheKey);
+  NORMALIZED_URL_CACHE.set(cacheKey, cached);
+  return cached.url;
+}
+
+/**
+ * R: Store a normalized URL in the bounded in-memory cache.
+ * M: Inserts the newest entry, refreshes duplicates, then trims oldest items.
+ * E: Empty URLs are still cached so fallback resolutions stay cheap.
+ */
+function rememberNormalizedUrl(cacheKey, url) {
+  if (NORMALIZED_URL_CACHE.has(cacheKey)) {
+    NORMALIZED_URL_CACHE.delete(cacheKey);
+  }
+
+  NORMALIZED_URL_CACHE.set(cacheKey, {
+    url: String(url || DEFAULT_URL),
+    createdAt: Date.now()
+  });
+
+  while (NORMALIZED_URL_CACHE.size > URL_CACHE_LIMIT) {
+    const oldestKey = NORMALIZED_URL_CACHE.keys().next().value;
+    NORMALIZED_URL_CACHE.delete(oldestKey);
+  }
+}
+
+/**
+ * R: Resolve the usable screen work area for the target window.
+ * M: Matches the window against the nearest display and returns its work area bounds.
+ * E: Falls back to current window bounds when display lookup is unavailable.
+ */
+function getWorkAreaBounds(win, referenceBounds = null) {
+  if (!win || win.isDestroyed()) {
+    return null;
+  }
+
+  const bounds = referenceBounds || win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  if (!display || !display.workArea) {
+    return bounds;
+  }
+
+  const { x, y, width, height } = display.workArea;
+  return { x, y, width, height };
+}
+
+/**
+ * R: Correct native maximized bounds for frameless windows.
+ * M: Reapplies the display work area after maximize so content aligns to the top-left corner.
+ * E: No-ops for destroyed windows and skips platforms that do not need the workaround.
+ */
+function alignNativeMaximize(win) {
+  if (!win || win.isDestroyed() || process.platform !== "win32") {
+    return;
+  }
+
+  const workAreaBounds = getWorkAreaBounds(win);
+  if (!workAreaBounds) {
+    return;
+  }
+
+  setTimeout(() => {
+    if (!win.isDestroyed() && win.isMaximized()) {
+      win.setBounds(workAreaBounds);
+    }
+  }, 0);
+}
 
 /**
  * R: Get a normalized URL from Jac so renderer input stays deterministic.
@@ -15,10 +116,20 @@ const RESTORE_BOUNDS = new WeakMap();
  * E: Rejects on process errors, timeouts, or malformed JSON.
  */
 function normalizeUrlWithJac(rawInput = "") {
-  return new Promise((resolve, reject) => {
+  const cacheKey = getNormalizedUrlCacheKey(rawInput);
+  const cached = readNormalizedUrlCache(cacheKey);
+  if (cached) {
+    return Promise.resolve(cached);
+  }
+
+  if (NORMALIZED_URL_INFLIGHT.has(cacheKey)) {
+    return NORMALIZED_URL_INFLIGHT.get(cacheKey);
+  }
+
+  const pending = new Promise((resolve, reject) => {
     const args = ["run", JAC_SCRIPT_PATH];
-    if (String(rawInput).trim()) {
-      args.push(String(rawInput));
+    if (cacheKey) {
+      args.push(cacheKey);
     }
 
     execFile("jac", args, { timeout: 4000 }, (error, stdout, stderr) => {
@@ -33,7 +144,9 @@ function normalizeUrlWithJac(rawInput = "") {
 
       try {
         const parsed = JSON.parse(stdout.trim());
-        resolve(parsed.url || DEFAULT_URL);
+        const finalUrl = parsed.url || DEFAULT_URL;
+        rememberNormalizedUrl(cacheKey, finalUrl);
+        resolve(finalUrl);
       } catch (parseError) {
         reject(
           new Error(
@@ -44,7 +157,12 @@ function normalizeUrlWithJac(rawInput = "") {
         );
       }
     });
+  }).finally(() => {
+    NORMALIZED_URL_INFLIGHT.delete(cacheKey);
   });
+
+  NORMALIZED_URL_INFLIGHT.set(cacheKey, pending);
+  return pending;
 }
 
 /**
@@ -93,7 +211,8 @@ function createWindow() {
     minWidth: 980,
     minHeight: 700,
     frame: false,
-    backgroundColor: "#f2f5fb",
+    show: false,
+    backgroundColor: "#edf4e3",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -103,7 +222,23 @@ function createWindow() {
     }
   });
 
+  win.on("maximize", () => {
+    alignNativeMaximize(win);
+  });
+
+  win.once("ready-to-show", () => {
+    if (!win.isDestroyed()) {
+      win.show();
+    }
+  });
+
   win.removeMenu();
+  if (fs.existsSync(CLIENT_INDEX_PATH)) {
+    win.loadFile(CLIENT_INDEX_PATH);
+    return;
+  }
+
+  console.warn("[window] Jac client bundle missing; falling back to legacy index.html");
   win.loadFile(path.join(__dirname, "index.html"));
 }
 
@@ -127,12 +262,18 @@ ipcMain.handle("window:toggle-maximize", (event) => {
     return false;
   }
 
+  if (win.isMaximized()) {
+    win.unmaximize();
+    return false;
+  }
+
   const currentBounds = win.getBounds();
-  const display = screen.getDisplayMatching(currentBounds);
-  const { x, y, width, height } = display.workArea;
+  const workAreaBounds = getWorkAreaBounds(win, currentBounds);
 
   RESTORE_BOUNDS.set(win, currentBounds);
-  win.setBounds({ x, y, width, height });
+  if (workAreaBounds) {
+    win.setBounds(workAreaBounds);
+  }
   return true;
 });
 
@@ -160,6 +301,8 @@ ipcMain.handle("browser:normalize-url", async (_event, rawInput) => {
     return DEFAULT_URL;
   }
 });
+
+ipcMain.handle("browser:get-webview-preload-url", () => WEBVIEW_PRELOAD_URL);
 
 ipcMain.handle("layers:start", async (_event, payload) => {
   try {

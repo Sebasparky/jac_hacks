@@ -2,6 +2,7 @@ import os;
 import sys;
 import json;
 import time;
+import re;
 import from typing { Any }
 
 glob DATA_ROOT: str = "./jac/layer_data";
@@ -83,6 +84,19 @@ def add_unique_key(values: list[str], key: str) {
     }
 }
 
+"""R: Convert free-form labels into stable input keys for fallback planning.
+M: Lowercases, strips punctuation, and joins runs with underscores.
+E: Empty strings collapse to `value`.
+"""
+def to_snake_case(raw: str) -> str {
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(raw).lower().strip());
+    normalized = normalized.strip("_");
+    if not normalized {
+        return "value";
+    }
+    return normalized;
+}
+
 """R: Resolve one workflow step with runtime inputs.
 M: Copies step dict and injects `value` for fill steps using `value_source`.
 E: Missing runtime values are tracked in unresolved input list.
@@ -111,6 +125,68 @@ def resolve_step(step: dict[str, Any], run_inputs: dict[str, Any], unresolved: l
     return resolved_step;
 }
 
+"""R: Resolve literal and secret fill values when no explicit value_source exists.
+M: Supports current compiler output so planning works before full runner integration.
+E: Secret placeholders become unresolved runtime keys using the best available target label.
+"""
+def resolve_fill_without_value_source(step: dict[str, Any], unresolved: list[str]) -> dict[str, Any] {
+    resolved_step: dict[str, Any] = dict(step);
+
+    raw_value = step.get("value", None);
+    if isinstance(raw_value, dict) {
+        kind = str(raw_value.get("kind", ""));
+        if kind == "literal" {
+            resolved_step["value"] = str(raw_value.get("value", ""));
+            return resolved_step;
+        }
+        if kind == "secret" {
+            secret_key = to_snake_case(str(raw_value.get("secretKey", "")));
+            add_unique_key(unresolved, secret_key);
+            resolved_step["value"] = "";
+            resolved_step["value_source"] = "input." + secret_key;
+            return resolved_step;
+        }
+    }
+
+    if "value" in step and not isinstance(step.get("value", None), dict) {
+        resolved_step["value"] = str(step.get("value", ""));
+        return resolved_step;
+    }
+
+    target: dict[str, Any] = {};
+    candidate_target = step.get("target", {});
+    if isinstance(candidate_target, dict) {
+        target = candidate_target;
+    }
+
+    primary: dict[str, Any] = {};
+    candidate_primary = target.get("primary", {});
+    if isinstance(candidate_primary, dict) {
+        primary = candidate_primary;
+    }
+
+    key_hint = str(
+        primary.get("label", "") or
+        primary.get("name", "") or
+        primary.get("placeholder", "") or
+        primary.get("text", "") or
+        primary.get("selector", "")
+    );
+    inferred_key = to_snake_case(key_hint);
+
+    if bool(step.get("secret", False)) {
+        add_unique_key(unresolved, inferred_key);
+        resolved_step["value"] = "";
+        resolved_step["value_source"] = "input." + inferred_key;
+        return resolved_step;
+    }
+
+    if "value" not in resolved_step {
+        resolved_step["value"] = "";
+    }
+    return resolved_step;
+}
+
 """R: Build a dry-run execution plan from a workflow + runtime inputs.
 M: Resolves each step deterministically and tracks unresolved input placeholders.
 E: Non-dict steps are ignored to avoid planner crashes.
@@ -130,8 +206,12 @@ def build_plan(workflow: dict[str, Any], run_inputs: dict[str, Any]) -> dict[str
             continue;
         }
 
-        resolved = resolve_step(raw_step, run_inputs, unresolved_inputs);
-        planned_steps.append(resolved);
+        if str(raw_step.get("type", "")) == "fill" and "value_source" not in raw_step {
+            planned_steps.append(resolve_fill_without_value_source(raw_step, unresolved_inputs));
+            continue;
+        }
+
+        planned_steps.append(resolve_step(raw_step, run_inputs, unresolved_inputs));
     }
 
     return {

@@ -1,5 +1,16 @@
 node_modules/
 .jac/
+.codex
+
+.env
+.env.*
+!.env.example
+
 jac/.jac/
 jac/layers/.jac/
 jac/layer_data/
+
+*.log
+generated/
+dist/
+build/

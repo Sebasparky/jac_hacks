@@ -11,26 +11,55 @@
       <header class="browser-chrome">
         <div class="drag-region" aria-hidden="true"></div>
         <div class="tab-strip">
-          <div class="tab active">
-            <span class="tab-dot"></span>
-            <span id="tabTitle" class="tab-title">New Tab</span>
+          <div class="chrome-brand" aria-hidden="true">
+            <span class="brand-mark"></span>
+            <span class="brand-copy">JacHacks</span>
           </div>
+          <div id="tabList" class="tab-list"></div>
+          <button id="newTabBtn" class="new-tab-btn" type="button" title="New Tab" aria-label="New Tab">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path
+                d="M10 4.25a.75.75 0 0 1 .75.75v4.25H15a.75.75 0 0 1 0 1.5h-4.25V15a.75.75 0 0 1-1.5 0v-4.25H5a.75.75 0 0 1 0-1.5h4.25V5a.75.75 0 0 1 .75-.75Z"
+                fill="currentColor"
+              />
+            </svg>
+          </button>
           <div class="window-controls">
-            <button id="minBtn" class="window-btn" title="Minimize">&#8211;</button>
-            <button id="maxBtn" class="window-btn" title="Maximize">&#9723;</button>
-            <button id="closeBtn" class="window-btn danger" title="Close">&#10005;</button>
+            <button id="minBtn" class="window-btn" type="button" title="Minimize">-</button>
+            <button id="maxBtn" class="window-btn" type="button" title="Maximize">[]</button>
+            <button id="closeBtn" class="window-btn danger" type="button" title="Close">X</button>
           </div>
         </div>
 
         <div class="toolbar">
           <div class="nav-group">
-            <button id="backBtn" class="icon-btn" title="Back">&#8592;</button>
-            <button id="forwardBtn" class="icon-btn" title="Forward">&#8594;</button>
-            <button id="reloadBtn" class="icon-btn" title="Reload">&#8635;</button>
+            <button id="homeBtn" class="icon-btn" type="button" title="Home" aria-label="Home">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path
+                  d="M10 3.5 3.75 8.8v6.45c0 .41.34.75.75.75h3.5v-4.4c0-.41.34-.75.75-.75h2.5c.41 0 .75.34.75.75V16h3.5c.41 0 .75-.34.75-.75V8.8L10 3.5Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </button>
+            <button id="backBtn" class="icon-btn" type="button" title="Back" aria-label="Back">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M11.75 4.75 6.5 10l5.25 5.25 1.06-1.06L8.62 10l4.19-4.19-1.06-1.06Z" fill="currentColor" />
+              </svg>
+            </button>
+            <button id="forwardBtn" class="icon-btn" type="button" title="Forward" aria-label="Forward">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M8.25 15.25 13.5 10 8.25 4.75 7.19 5.81 11.38 10l-4.19 4.19 1.06 1.06Z" fill="currentColor" />
+              </svg>
+            </button>
+            <button id="reloadBtn" class="icon-btn" type="button" title="Reload" aria-label="Reload">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M14.96 8A5 5 0 1 0 15 12h-1.6A3.5 3.5 0 1 1 12.94 8H10V6.5h5V11h-1.5V8Z" fill="currentColor" />
+              </svg>
+            </button>
           </div>
 
           <form id="navForm" class="omnibox-wrap">
-            <span id="siteBadge" class="site-badge">Secure</span>
+            <span id="siteBadge" class="site-badge" data-state="secure">Secure</span>
             <input
               id="addressInput"
               class="address-input"
@@ -39,8 +68,51 @@
               autocomplete="off"
               spellcheck="false"
             />
-            <button id="goBtn" class="go-btn" type="submit">Go</button>
+            <button id="goBtn" class="go-btn" type="submit" aria-label="Go">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M5 10h8.19l-3.1 3.1 1.06 1.06L16.06 9.25 11.15 4.34 10.09 5.4l3.1 3.1H5V10Z" fill="currentColor" />
+              </svg>
+            </button>
           </form>
+
+          <div class="toolbar-actions">
+            <button id="toggleLayersBtn" class="toolbar-pill" type="button" title="Toggle Layer Panel" aria-pressed="true">
+              Layers
+            </button>
+            <div class="profile-chip" aria-hidden="true">
+              <span class="profile-avatar">J</span>
+              <span class="profile-name">Workspace</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bookmark-bar">
+          <button class="bookmark-item" type="button" data-nav-url="https://jaclang.org/">
+            <span class="bookmark-favicon jac"></span>
+            <span>Jac Lang</span>
+          </button>
+          <button class="bookmark-item" type="button" data-nav-url="https://docs.jac-lang.org/">
+            <span class="bookmark-favicon docs"></span>
+            <span>Docs</span>
+          </button>
+          <button class="bookmark-item" type="button" data-nav-url="https://github.com/">
+            <span class="bookmark-favicon github"></span>
+            <span>GitHub</span>
+          </button>
+          <button class="bookmark-item" type="button" data-nav-url="https://platform.openai.com/docs/overview">
+            <span class="bookmark-favicon openai"></span>
+            <span>OpenAI</span>
+          </button>
+          <button class="bookmark-item" type="button" data-nav-url="https://www.electronjs.org/docs/latest/">
+            <span class="bookmark-favicon electron"></span>
+            <span>Electron</span>
+          </button>
+          <button class="bookmark-item" type="button" data-nav-url="https://duckduckgo.com/">
+            <span class="bookmark-favicon search"></span>
+            <span>Search</span>
+          </button>
+          <div class="bookmark-spacer"></div>
+          <button class="bookmark-folder" type="button">All Bookmarks</button>
         </div>
 
         <div class="progress-track">
@@ -48,26 +120,31 @@
         </div>
       </header>
 
-      <main class="viewport">
-        <webview
-          id="browserView"
-          class="browser-view"
-          src="https://example.com"
-          allowpopups
-        ></webview>
-      </main>
+      <main id="viewport" class="viewport"></main>
 
-      <aside class="layer-panel">
-        <div class="layer-panel-header">Layer Dev</div>
+      <aside id="layerPanel" class="layer-panel">
+        <div class="layer-panel-header">
+          <div>
+            <div class="layer-panel-kicker">Layer Dev</div>
+            <div class="layer-panel-title">Automation Studio</div>
+          </div>
+          <span class="layer-status-pill">Ready</span>
+        </div>
         <div class="layer-panel-actions">
-          <button id="startTraceBtn" class="layer-btn">Start Trace</button>
-          <button id="stopTraceBtn" class="layer-btn">Stop Trace</button>
-          <button id="compileTraceBtn" class="layer-btn">Compile</button>
-          <button id="planWorkflowBtn" class="layer-btn">Plan</button>
+          <button id="startTraceBtn" class="layer-btn" type="button">Start Trace</button>
+          <button id="stopTraceBtn" class="layer-btn" type="button">Stop Trace</button>
+          <button id="compileTraceBtn" class="layer-btn" type="button">Compile</button>
+          <button id="planWorkflowBtn" class="layer-btn" type="button">Plan</button>
         </div>
         <div class="layer-panel-state">
-          <div>Session: <span id="sessionIdLabel">none</span></div>
-          <div>Workflow: <span id="workflowIdLabel">none</span></div>
+          <div class="layer-state-chip">
+            <span class="layer-state-label">Session</span>
+            <span id="sessionIdLabel">none</span>
+          </div>
+          <div class="layer-state-chip">
+            <span class="layer-state-label">Workflow</span>
+            <span id="workflowIdLabel">none</span>
+          </div>
         </div>
         <pre id="layerLog" class="layer-log">Layer pipeline ready.</pre>
       </aside>

@@ -1,6 +1,7 @@
 {
   "name": "jac-hacks-browser",
   "version": "0.1.0",
+  "description": "Browser workflow compiler — record once, replay reliably",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -8,9 +9,22 @@
     "dev": "env -u ELECTRON_RUN_AS_NODE electron .",
     "dry-run": "jac run jac/browser_core.jac",
     "layers:check": "jac check jac/layers/observation.jac jac/layers/compilation.jac jac/layers/execution.jac",
-    "jac-coder": "jac-coder-server"
+    "jac-coder": "jac-coder-server",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "electron": "^41.1.1"
+    "electron": "^41.1.1",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.2"
+  },
+  "dependencies": {
+    "@types/uuid": "^9.0.0",
+    "uuid": "^9.0.0",
+    "zod": "^3.22.0"
   }
 }

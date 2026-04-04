@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "jac": {
+      "command": "/Users/sebastianchacon/.local/bin/jac",
+      "args": ["mcp"],
+      "type": "stdio"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+node_modules/
+.jac/
+jac/.jac/
+jac/layers/.jac/
+jac/layer_data/

@@ -21,6 +21,7 @@ cl {
         state = {
             "viewport": document.getElementById("viewport"),
             "helpersPage": document.getElementById("helpersPage"),
+            "shellContent": document.getElementById("shellContent"),
             "tabList": document.getElementById("tabList"),
             "newTabBtn": document.getElementById("newTabBtn"),
             "navForm": document.getElementById("navForm"),
@@ -38,6 +39,23 @@ cl {
             "closeBtn": document.getElementById("closeBtn"),
             "goBtn": document.getElementById("goBtn"),
             "toggleLayersBtn": document.getElementById("toggleLayersBtn"),
+            "tasksPanelOpenHelpersBtn": document.getElementById("tasksPanelOpenHelpersBtn"),
+            "tasksCreateTabBtn": document.getElementById("tasksCreateTabBtn"),
+            "tasksRunTabBtn": document.getElementById("tasksRunTabBtn"),
+            "tasksCreatePanel": document.getElementById("tasksCreatePanel"),
+            "tasksRunPanel": document.getElementById("tasksRunPanel"),
+            "taskCreateRecordingState": document.getElementById("taskCreateRecordingState"),
+            "taskCreateSessionMeta": document.getElementById("taskCreateSessionMeta"),
+            "taskPanelRecordBtn": document.getElementById("taskPanelRecordBtn"),
+            "taskCreateContextPanel": document.getElementById("taskCreateContextPanel"),
+            "taskCreateContextInput": document.getElementById("taskCreateContextInput"),
+            "taskPanelGenerateBtn": document.getElementById("taskPanelGenerateBtn"),
+            "taskRunSelectedName": document.getElementById("taskRunSelectedName"),
+            "taskRunSelectedMeta": document.getElementById("taskRunSelectedMeta"),
+            "taskRunSelectedGoal": document.getElementById("taskRunSelectedGoal"),
+            "taskRunOverrideInput": document.getElementById("taskRunOverrideInput"),
+            "taskPanelRunBtn": document.getElementById("taskPanelRunBtn"),
+            "taskPanelRunClearBtn": document.getElementById("taskPanelRunClearBtn"),
             "startTraceBtn": document.getElementById("startTraceBtn"),
             "stopTraceBtn": document.getElementById("stopTraceBtn"),
             "compileTraceBtn": document.getElementById("compileTraceBtn"),
@@ -75,11 +93,20 @@ cl {
             "clawLastPlanResult": None,
             "clawLastSavedMessage": "",
             "activeShellView": "browser",
+            "tasksPanelOpen": True,
+            "activeTaskPanelTab": "create",
+            "taskRecordingActive": False,
+            "recordedTaskSessionId": "",
+            "recordedTaskEventCount": 0,
+            "taskCreateContextText": "",
+            "taskCreateIsGenerating": False,
             "helperBuilderOpen": False,
             "helperDraftName": "",
             "helperDraftGoal": "",
             "helperDraftFrequency": "once",
             "selectedHelperId": "",
+            "selectedTaskRunHelperId": "",
+            "taskRunOverrideText": "",
             "helperEditMode": False,
             "helperEditGoalDraft": "",
             "helpers": [],
@@ -315,6 +342,10 @@ cl {
             return trimmedText(state["helperDraftName"]) != "" and trimmedText(state["helperDraftGoal"]) != "";
         }
 
+        def normalizedTaskPanelTab(rawValue: any) -> str {
+            return "run" if str(rawValue or "") == "run" else "create";
+        }
+
         def localTimestamp() -> str {
             return Reflect.construct(Date, []).toLocaleString();
         }
@@ -391,12 +422,61 @@ cl {
             state["helperDraftFrequency"] = "once";
         }
 
-        def expandLayerPanel() -> None {
-            if state["layerPanel"] and state["layerPanel"].classList.contains("collapsed") {
-                state["layerPanel"].classList.remove("collapsed");
+        """R: Keep the TASKS launcher in sync with the lower shell layout.
+        M: Mirrors the open state into the toolbar toggle, hides the launcher when closed, and collapses the lower grid to a single content column.
+        E: Missing DOM nodes are ignored so the browser and Helpers views still work even if the launcher is absent.
+        """;
+        def syncTasksPanelUi() -> None {
+            panel_open = state["tasksPanelOpen"] != False;
+            if state["shellContent"] {
+                if panel_open {
+                    state["shellContent"].classList.remove("tasks-closed");
+                } else {
+                    state["shellContent"].classList.add("tasks-closed");
+                }
+            }
+            if state["layerPanel"] {
+                state["layerPanel"].style.display = "flex" if panel_open else "none";
             }
             if state["toggleLayersBtn"] {
-                state["toggleLayersBtn"].setAttribute("aria-pressed", "true");
+                state["toggleLayersBtn"].textContent = "TASKS";
+                state["toggleLayersBtn"].setAttribute("aria-pressed", "true" if panel_open else "false");
+                state["toggleLayersBtn"].setAttribute("aria-expanded", "true" if panel_open else "false");
+                state["toggleLayersBtn"].title = "Close Tasks Panel" if panel_open else "Open Tasks Panel";
+            }
+        }
+
+        """R: Keep the TASKS panel focused on either quick creation or quick execution.
+        M: Mirrors the active panel tab into the compact tab buttons and toggles the matching panel body in place.
+        E: Unknown tab names fall back to `create`, and missing nodes simply skip visual updates.
+        """;
+        def syncTaskPanelTabsUi() -> None {
+            active_tab = normalizedTaskPanelTab(state["activeTaskPanelTab"]);
+            state["activeTaskPanelTab"] = active_tab;
+
+            if state["tasksCreateTabBtn"] {
+                if active_tab == "create" {
+                    state["tasksCreateTabBtn"].classList.add("active");
+                } else {
+                    state["tasksCreateTabBtn"].classList.remove("active");
+                }
+                state["tasksCreateTabBtn"].setAttribute("aria-selected", "true" if active_tab == "create" else "false");
+                state["tasksCreateTabBtn"].title = "Record a task flow, add context, and generate a saved task.";
+            }
+            if state["tasksRunTabBtn"] {
+                if active_tab == "run" {
+                    state["tasksRunTabBtn"].classList.add("active");
+                } else {
+                    state["tasksRunTabBtn"].classList.remove("active");
+                }
+                state["tasksRunTabBtn"].setAttribute("aria-selected", "true" if active_tab == "run" else "false");
+                state["tasksRunTabBtn"].title = "Run a saved task with optional one-run guidance.";
+            }
+            if state["tasksCreatePanel"] {
+                state["tasksCreatePanel"].style.display = "flex" if active_tab == "create" else "none";
+            }
+            if state["tasksRunPanel"] {
+                state["tasksRunPanel"].style.display = "flex" if active_tab == "run" else "none";
             }
         }
 
@@ -430,10 +510,10 @@ cl {
         E: Missing builder nodes are ignored so the browser shell still works when helper UI is absent.
         """;
         def syncHelperBuilderUi() -> None {
-            if state["createHelperBtn"] {
-                state["createHelperBtn"].textContent = "Close Helper" if state["helperBuilderOpen"] else "Create Helper";
-                state["createHelperBtn"].setAttribute("aria-expanded", str(state["helperBuilderOpen"]));
-                state["createHelperBtn"].title = "Hide the helper builder." if state["helperBuilderOpen"] else "Open the larger helper builder.";
+            if state["helpersPageCreateBtn"] {
+                state["helpersPageCreateBtn"].textContent = "Close Builder" if state["helperBuilderOpen"] else "Create Helper";
+                state["helpersPageCreateBtn"].setAttribute("aria-expanded", str(state["helperBuilderOpen"]));
+                state["helpersPageCreateBtn"].title = "Hide the helper builder." if state["helperBuilderOpen"] else "Open the helper builder in the Helpers page.";
             }
             if state["helperBuilderPanel"] {
                 state["helperBuilderPanel"].style.display = "flex" if state["helperBuilderOpen"] else "none";
@@ -456,36 +536,141 @@ cl {
             }
         }
 
-        """R: Render the small helper list inside the regular Claw panel without switching to framework state.
-        M: Rebuilds compact helper cards from renderer memory and wires local run-now buttons for demo feedback.
-        E: An empty helper list falls back to a truthful placeholder, and missing DOM nodes simply skip rendering work.
+        def taskCreateHasRecordedSession() -> bool {
+            return trimmedText(state["recordedTaskSessionId"]) != "";
+        }
+
+        """R: Keep the TASKS create composer aligned with recording and post-recording generation state.
+        M: Mirrors recording status into the Start/Stop control, shows the post-stop context box, and surfaces the latest captured session reference.
+        E: Missing DOM nodes are ignored so the broader shell can still run even if the compact create UI is absent.
+        """;
+        def syncTaskCreateUi() -> None {
+            session_id = trimmedText(state["recordedTaskSessionId"]);
+            event_count = Number(state["recordedTaskEventCount"] or 0);
+
+            if state["taskCreateRecordingState"] {
+                if state["taskRecordingActive"] {
+                    state["taskCreateRecordingState"].setAttribute("data-recording", "true");
+                } else {
+                    state["taskCreateRecordingState"].setAttribute("data-recording", "false");
+                }
+            }
+            if state["taskCreateSessionMeta"] {
+                if state["taskRecordingActive"] and state["activeSessionId"] {
+                    state["taskCreateSessionMeta"].textContent = "Recording live: " + state["activeSessionId"];
+                } elif session_id {
+                    state["taskCreateSessionMeta"].textContent = (
+                        "Recorded session " + session_id +
+                        " with " + str(event_count) + " events."
+                    );
+                } else {
+                    state["taskCreateSessionMeta"].textContent = "No recording captured yet.";
+                }
+            }
+            if state["taskPanelRecordBtn"] {
+                state["taskPanelRecordBtn"].disabled = state["taskCreateIsGenerating"] == True;
+                if state["taskCreateIsGenerating"] {
+                    state["taskPanelRecordBtn"].textContent = "Generating...";
+                    state["taskPanelRecordBtn"].title = "Task generation is in progress.";
+                } elif state["taskRecordingActive"] {
+                    state["taskPanelRecordBtn"].textContent = "Stop";
+                    state["taskPanelRecordBtn"].title = "Stop recording this task trace.";
+                } else {
+                    state["taskPanelRecordBtn"].textContent = "Start";
+                    state["taskPanelRecordBtn"].title = "Start recording a task trace.";
+                }
+            }
+            if state["taskCreateContextPanel"] {
+                state["taskCreateContextPanel"].style.display = "flex" if taskCreateHasRecordedSession() and not state["taskRecordingActive"] else "none";
+            }
+            if state["taskCreateContextInput"] and state["taskCreateContextInput"].value != state["taskCreateContextText"] {
+                state["taskCreateContextInput"].value = state["taskCreateContextText"];
+            }
+            if state["taskPanelGenerateBtn"] {
+                state["taskPanelGenerateBtn"].disabled = not taskCreateHasRecordedSession() or state["taskRecordingActive"] == True or state["taskCreateIsGenerating"] == True;
+                state["taskPanelGenerateBtn"].textContent = "Generating..." if state["taskCreateIsGenerating"] else "Generate Task";
+                state["taskPanelGenerateBtn"].title = (
+                    "Stop recording before generating a task." if state["taskRecordingActive"] else (
+                        "Record a task first." if not taskCreateHasRecordedSession() else "Generate a saved task from the recorded trace and extra context."
+                    )
+                );
+            }
+        }
+
+        def setTaskPanelTab(nextTab: any) -> None {
+            state["activeTaskPanelTab"] = normalizedTaskPanelTab(nextTab);
+            syncClawUi();
+        }
+
+        """R: Keep run-mode task selection stable inside the compact TASKS panel.
+        M: Reuses the current run selection when possible and otherwise falls back to the first saved helper in local state.
+        E: Empty helper sets clear the run selection so the panel never targets a stale task id.
+        """;
+        def ensureSelectedTaskRunHelper() -> None {
+            if findHelperById(state["selectedTaskRunHelperId"]) {
+                return;
+            }
+            if len(state["helpers"]) > 0 {
+                state["selectedTaskRunHelperId"] = str(objectValue(state["helpers"][0], "id", ""));
+                return;
+            }
+            state["selectedTaskRunHelperId"] = "";
+        }
+
+        def selectedTaskRunHelper() -> any {
+            ensureSelectedTaskRunHelper();
+            return findHelperById(state["selectedTaskRunHelperId"]);
+        }
+
+        def selectTaskRunHelper(helperId: any, focusRunTab: any = True) -> None {
+            helper = findHelperById(helperId);
+            if not helper {
+                return;
+            }
+            state["selectedTaskRunHelperId"] = str(objectValue(helper, "id", ""));
+            if focusRunTab != False {
+                state["activeTaskPanelTab"] = "run";
+            }
+            syncClawUi();
+        }
+
+        """R: Render the compact TASKS run list from renderer-local helper state.
+        M: Rebuilds small saved-task cards and lets the user select which helper should be used for the next local demo run.
+        E: Empty helper lists fall back to a truthful prompt, and missing DOM nodes simply skip rendering work.
         """;
         def renderHelperList() -> None {
             if not state["helperList"] {
                 return;
             }
 
+            ensureSelectedTaskRunHelper();
+            selected_id = str(state["selectedTaskRunHelperId"] or "");
             state["helperList"].textContent = "";
             if len(state["helpers"]) == 0 {
-                state["helperList"].textContent = "No helpers yet. Create one to keep a lightweight assistant brief in this browser shell.";
+                state["helperList"].textContent = "No saved tasks yet. Use Create to make one quickly, or open Helpers for deeper management.";
                 return;
             }
 
             for helper in state["helpers"] {
                 helper_id = str(objectValue(helper, "id", ""));
-                card = document.createElement("div");
+                card = document.createElement("button");
+                card.type = "button";
+                card.className = "task-run-list-item";
                 card.style.display = "flex";
                 card.style.flexDirection = "column";
+                card.style.alignItems = "stretch";
                 card.style.gap = "6px";
+                card.style.width = "100%";
                 card.style.padding = "10px 12px";
-                card.style.borderRadius = "12px";
-                card.style.background = "#ffffff";
-                card.style.border = "1px solid rgba(88, 116, 173, 0.12)";
+                card.style.borderRadius = "14px";
+                card.style.border = "1px solid rgba(88, 116, 173, 0.14)";
+                card.style.background = "linear-gradient(180deg, rgba(234, 241, 255, 0.98) 0%, rgba(255, 255, 255, 0.98) 100%)" if helper_id == selected_id else "#ffffff";
+                card.style.boxSizing = "border-box";
                 card.style.cursor = "pointer";
-                card.title = "Open this helper in the Helpers page.";
+                card.style.textAlign = "left";
+                card.title = "Select this saved task for the next run.";
                 card.addEventListener("click", lambda {
-                    selectHelper(helper_id);
-                    setShellView("helpers");
+                    selectTaskRunHelper(helper_id);
                 });
 
                 title = document.createElement("div");
@@ -511,45 +696,59 @@ cl {
                 goal.style.lineHeight = "1.55";
                 goal.textContent = helperGoalPreview(objectValue(helper, "goal", ""));
 
-                actions = document.createElement("div");
-                actions.style.display = "flex";
-                actions.style.justifyContent = "space-between";
-                actions.style.alignItems = "center";
-                actions.style.gap = "8px";
-
                 stamp = document.createElement("div");
                 stamp.style.color = "#6b7f9f";
                 stamp.style.fontSize = "10px";
-                stamp.textContent = "Created " + trimmedText(objectValue(helper, "createdAt", ""));
-
-                runBtn = document.createElement("button");
-                runBtn.className = "layer-btn";
-                runBtn.type = "button";
-                runBtn.dataset.helperId = helper_id;
-                runBtn.textContent = "Run now";
-                runBtn.title = "Record a local demo run request for this helper.";
-                runBtn.style.padding = "6px 10px";
-                runBtn.style.fontSize = "11px";
-                runBtn.addEventListener("click", lambda event {
-                    event.stopPropagation();
-                    button = event.currentTarget or event.target;
-                    handleHelperRunNow(button.dataset.helperId or "");
-                });
-
-                actions.appendChild(stamp);
-                actions.appendChild(runBtn);
+                stamp.textContent = "Selected for run" if helper_id == selected_id else ("Created " + trimmedText(objectValue(helper, "createdAt", "")));
 
                 card.appendChild(title);
                 card.appendChild(meta);
                 card.appendChild(goal);
-                card.appendChild(actions);
+                card.appendChild(stamp);
                 state["helperList"].appendChild(card);
             }
         }
 
+        """R: Keep the TASKS run composer aligned with the selected helper and one-run guidance draft.
+        M: Mirrors the selected helper summary, syncs the override textarea, and disables run actions when nothing is selected.
+        E: Missing DOM nodes are ignored, and empty helper state falls back to honest instructional copy.
+        """;
+        def syncTaskRunComposerUi() -> None {
+            helper = selectedTaskRunHelper();
+            helper_name = trimmedText(objectValue(helper, "name", "")) if helper else "";
+            helper_goal = trimmedText(objectValue(helper, "goal", "")) if helper else "";
+
+            if state["taskRunSelectedName"] {
+                state["taskRunSelectedName"].textContent = helper_name or "No task selected";
+            }
+            if state["taskRunSelectedMeta"] {
+                state["taskRunSelectedMeta"].textContent = (
+                    helperFrequencyLabel(objectValue(helper, "frequency", "once")) +
+                    " | " +
+                    str(objectValue(helper, "kind", "general")) +
+                    " | saved helper"
+                ) if helper else "Choose a saved task from the list above, or create one in this panel.";
+            }
+            if state["taskRunSelectedGoal"] {
+                state["taskRunSelectedGoal"].textContent = helper_goal or "Saved instructions will appear here before you run.";
+            }
+            if state["taskRunOverrideInput"] and state["taskRunOverrideInput"].value != state["taskRunOverrideText"] {
+                state["taskRunOverrideInput"].value = state["taskRunOverrideText"];
+            }
+            if state["taskPanelRunBtn"] {
+                state["taskPanelRunBtn"].disabled = not helper;
+                state["taskPanelRunBtn"].title = "Select a saved task first." if not helper else "Run this saved task with optional one-run guidance.";
+            }
+            if state["taskPanelRunClearBtn"] {
+                state["taskPanelRunClearBtn"].disabled = trimmedText(state["taskRunOverrideText"]) == "";
+                state["taskPanelRunClearBtn"].title = "Clear the one-run guidance." if trimmedText(state["taskRunOverrideText"]) else "No one-run guidance to clear.";
+            }
+        }
+
         def openHelperBuilder() -> None {
+            setShellView("helpers");
+            state["activeTaskPanelTab"] = "create";
             state["helperBuilderOpen"] = True;
-            expandLayerPanel();
             syncClawUi();
             if state["helperNameInput"] {
                 setTimeout(lambda { state["helperNameInput"].focus(); }, 10);
@@ -720,7 +919,7 @@ cl {
                 empty_list.style.color = "#526885";
                 empty_list.style.fontSize = "13px";
                 empty_list.style.lineHeight = "1.6";
-                empty_list.textContent = "No helpers yet. Use Create Helper to open the local builder in the side panel.";
+                empty_list.textContent = "No helpers yet. Use quick Create in TASKS or Create Helper here when you want the deeper workspace view.";
                 state["helpersPageList"].appendChild(empty_list);
             } else {
                 for helper in state["helpers"] {
@@ -772,7 +971,7 @@ cl {
                     run_btn = document.createElement("button");
                     run_btn.className = "layer-btn";
                     run_btn.type = "button";
-                    run_btn.textContent = "Run now";
+                    run_btn.textContent = "Run Task";
                     run_btn.style.flex = "0 0 auto";
                     run_btn.style.padding = "0 12px";
                     run_btn.style.minWidth = "92px";
@@ -847,7 +1046,7 @@ cl {
                 run_btn = document.createElement("button");
                 run_btn.className = "layer-btn";
                 run_btn.type = "button";
-                run_btn.textContent = "Run now";
+                run_btn.textContent = "Run Task";
                 run_btn.addEventListener("click", lambda {
                     handleHelperRunNow(objectValue(selected, "id", ""));
                 });
@@ -970,7 +1169,7 @@ cl {
                 empty_results.style.color = "#526885";
                 empty_results.style.fontSize = "13px";
                 empty_results.style.lineHeight = "1.6";
-                empty_results.textContent = "No local results yet. Use Run now to capture a renderer-only demo result for this helper.";
+                empty_results.textContent = "No local results yet. Run this helper from TASKS or use Run Task here to capture a renderer-only demo result.";
                 state["helpersPageResults"].appendChild(empty_results);
                 return;
             }
@@ -1099,7 +1298,10 @@ cl {
         E: Missing DOM nodes are ignored so the shell can still boot without the Claw block.
         """;
         def syncClawUi() -> None {
+            syncTasksPanelUi();
+            syncTaskPanelTabsUi();
             syncShellViewUi();
+            syncTaskCreateUi();
             if state["clawDraftInput"] and state["clawDraftInput"].value != state["clawDraft"] {
                 state["clawDraftInput"].value = state["clawDraft"];
             }
@@ -1123,6 +1325,7 @@ cl {
             }
             syncHelperBuilderUi();
             renderHelperList();
+            syncTaskRunComposerUi();
             renderHelpersWorkspace();
             renderClawTranscript();
         }
@@ -1520,6 +1723,317 @@ cl {
             setClawStatus(state["clawLastSavedMessage"]);
         }
 
+        """R: Store one saved helper in renderer-local state for both quick-create and recorded-task flows.
+        M: Normalizes helper metadata, updates selection/run state, and posts a compact local-only confirmation to the transcript.
+        E: Empty specs degrade to stable defaults so local demo creation never claims persistence or backend execution.
+        """;
+        def saveHelperRecord(
+            helper_name: any,
+            helper_goal: any,
+            helper_frequency: any,
+            helper_spec: any,
+            transcript_message: any,
+            status_message: any
+        ) -> None {
+            final_name = trimmedText(helper_name) or "Recorded Browser Task";
+            final_goal = trimmedText(helper_goal) or "Follow the locally recorded browser workflow.";
+            final_frequency = normalizedHelperFrequency(helper_frequency);
+            helper = {
+                "id": nextHelperId(),
+                "name": final_name,
+                "goal": final_goal,
+                "frequency": final_frequency,
+                "frequencyLabel": helperFrequencyLabel(final_frequency),
+                "kind": objectValue(helper_spec, "type", "general"),
+                "readOnly": True,
+                "createdAt": localTimestamp(),
+                "spec": helper_spec
+            };
+            state["helpers"].push(helper);
+            state["selectedHelperId"] = helper["id"];
+            state["selectedTaskRunHelperId"] = helper["id"];
+            state["activeTaskPanelTab"] = "run";
+            state["taskRunOverrideText"] = "";
+            state["helperEditMode"] = False;
+            state["helperEditGoalDraft"] = final_goal;
+
+            appendClawTranscript("system", trimmedText(transcript_message) or ("Helper created: " + final_name));
+            setClawStatus(trimmedText(status_message) or ("Helper ready: " + final_name + " (" + helper["frequencyLabel"] + ")"));
+        }
+
+        def taskTraceEventCount(traceData: any) -> int {
+            events = objectValue(traceData, "events", []) or [];
+            try {
+                return len(events);
+            } except Exception {
+                return 0;
+            }
+        }
+
+        def recordedTaskSourceUrl(traceData: any) -> str {
+            return trimmedText(objectValue(traceData, "source_url", ""));
+        }
+
+        def recordedTaskHost(traceData: any) -> str {
+            source_url = recordedTaskSourceUrl(traceData);
+            if not source_url {
+                return "";
+            }
+            try {
+                parsed = Reflect.construct(URL, [source_url]);
+                return trimmedText(parsed.hostname or "");
+            } except Exception {
+                return "";
+            }
+        }
+
+        """R: Generate a compact saved-task title from the recorded session and any extra user context.
+        M: Prefers the user's added context, then falls back to trace metadata, and trims the result for list readability.
+        E: Empty context and sparse traces fall back to a stable generic task title.
+        """;
+        def buildRecordedTaskName(traceData: any, contextText: any) -> str {
+            source_text = trimmedText(contextText);
+            if not source_text {
+                source_text = trimmedText(objectValue(traceData, "title", ""));
+            }
+            if not source_text {
+                source_text = trimmedText(objectValue(objectValue(traceData, "latest_semantic", {}), "title", ""));
+            }
+            if not source_text {
+                host = recordedTaskHost(traceData);
+                if host {
+                    source_text = "Task for " + host;
+                }
+            }
+            if not source_text {
+                source_text = "Recorded Browser Task";
+            }
+
+            clean_text = source_text.replace("\n", " ").replace("\r", " ").replace(":", " ").replace(".", " ");
+            words = [];
+            for raw_word in clean_text.split(" ") {
+                word = trimmedText(raw_word);
+                if not word {
+                    continue;
+                }
+                words.push(word);
+                if len(words) >= 5 {
+                    break;
+                }
+            }
+
+            final_name = " ".join(words) if len(words) > 0 else "Recorded Browser Task";
+            return final_name if len(final_name) <= 56 else final_name.slice(0, 53) + "...";
+        }
+
+        """R: Assemble local saved-task instructions from the captured trace and the user's post-recording context.
+        M: Blends the typed context with trace/session metadata and compiled workflow counts into a skimmable task brief.
+        E: Sparse traces still produce a usable goal so Generate Task never depends on hidden fields being present.
+        """;
+        def buildRecordedTaskGoal(traceData: any, contextText: any, compileResult: any) -> str {
+            details = [];
+            extra_context = trimmedText(contextText);
+            if extra_context {
+                details.push(extra_context);
+            }
+
+            source_url = recordedTaskSourceUrl(traceData);
+            if source_url {
+                details.push("Use the recorded browser flow that started at " + source_url + ".");
+            }
+
+            event_count = taskTraceEventCount(traceData);
+            if event_count > 0 {
+                details.push("The captured trace includes " + str(event_count) + " browser events.");
+            }
+
+            compiled_steps = Number(objectValue(compileResult, "step_count", 0));
+            compiled_inputs = Number(objectValue(compileResult, "input_count", 0));
+            if compiled_steps > 0 {
+                details.push(
+                    "The local workflow compiler inferred " + str(compiled_steps) +
+                    " steps" + (" and " + str(compiled_inputs) + " inputs." if compiled_inputs > 0 else ".")
+                );
+            }
+
+            details.push("Keep this as a renderer-local demo helper generated from the recorded task trace.");
+            return "\n".join(details);
+        }
+
+        """R: Fetch the stored trace payload for a stopped task recording.
+        M: Calls the existing local get-trace bridge and returns the raw renderer-friendly result for downstream generation.
+        E: Missing session ids, bridge gaps, and thrown errors become explicit `{ ok: false, error }` payloads.
+        """;
+        async def fetchRecordedTaskTrace(sessionId: any) -> any {
+            final_session_id = trimmedText(sessionId);
+            if not final_session_id {
+                return {"ok": False, "error": "session_id is required"};
+            }
+
+            api = browserAPI();
+            if not api or not api.layersGetTrace {
+                return {"ok": False, "error": "browser bridge unavailable"};
+            }
+
+            try {
+                result = await api.layersGetTrace({"session_id": final_session_id});
+                if not result or objectValue(result, "ok", True) == False {
+                    return result or {"ok": False, "error": "trace not found"};
+                }
+                return result;
+            } except Exception as err {
+                return {"ok": False, "error": str(err.message or err)};
+            }
+        }
+
+        """R: Toggle TASKS create-mode recording without reviving the old planner surface.
+        M: Starts or stops the existing live trace bridge, updates renderer-local create state, and focuses the next relevant control.
+        E: Bridge failures and missing active sessions surface honest status text instead of pretending recording succeeded.
+        """;
+        async def handleTaskPanelRecordToggle() -> None {
+            if state["taskCreateIsGenerating"] {
+                return;
+            }
+
+            api = browserAPI();
+            if not api or not api.layersStart or not api.layersStop {
+                setClawStatus("Task recording is unavailable because the browser bridge is offline.");
+                return;
+            }
+
+            if not state["taskRecordingActive"] {
+                webview = getActiveWebview();
+                url = DEFAULT_URL;
+                if webview and webview.getURL() {
+                    url = webview.getURL();
+                } elif state["addressInput"] and state["addressInput"].value {
+                    url = state["addressInput"].value;
+                }
+
+                try {
+                    result = await api.layersStart({"title": "Recorded Task", "url": url});
+                    if not result or objectValue(result, "ok", True) == False {
+                        setClawStatus("Start recording failed: " + str(objectValue(result, "error", "unknown error")));
+                        return;
+                    }
+                    state["activeSessionId"] = objectValue(result, "session_id", "") or "";
+                    state["activeWorkflowId"] = "";
+                    state["taskRecordingActive"] = True;
+                    state["recordedTaskSessionId"] = "";
+                    state["recordedTaskEventCount"] = 0;
+                    state["taskCreateContextText"] = "";
+                    syncLayerStateLabels();
+                    setClawStatus("Recording task flow now. Browse normally, then click Stop.");
+                    syncClawUi();
+                    return;
+                } except Exception as err {
+                    setClawStatus("Start recording threw: " + str(err.message or err));
+                    return;
+                }
+            }
+
+            active_session_id = trimmedText(state["activeSessionId"]);
+            if not active_session_id {
+                state["taskRecordingActive"] = False;
+                setClawStatus("Stop recording skipped because there is no active session.");
+                syncClawUi();
+                return;
+            }
+
+            try {
+                result = await api.layersStop({"session_id": active_session_id});
+                if not result or objectValue(result, "ok", True) == False {
+                    setClawStatus("Stop recording failed: " + str(objectValue(result, "error", "unknown error")));
+                    return;
+                }
+                state["taskRecordingActive"] = False;
+                state["recordedTaskSessionId"] = active_session_id;
+                state["recordedTaskEventCount"] = Number(objectValue(result, "event_count", 0));
+                state["activeWorkflowId"] = "";
+                syncLayerStateLabels();
+                setClawStatus("Recording stopped. Add context, then generate the saved task.");
+                syncClawUi();
+                setTimeout(lambda {
+                    if state["taskCreateContextInput"] {
+                        state["taskCreateContextInput"].focus();
+                    }
+                }, 10);
+            } except Exception as err {
+                setClawStatus("Stop recording threw: " + str(err.message or err));
+            }
+        }
+
+        """R: Turn a stopped recorded task into a renderer-local saved helper using the existing local compile path.
+        M: Reads the stored trace, compiles it through the hidden runtime/compiler flow, then saves a helper built from the trace plus extra context.
+        E: Missing recordings, compile failures, and bridge issues stop with truthful status messages instead of creating partial tasks.
+        """;
+        async def handleTaskPanelGenerate() -> None {
+            recorded_session_id = trimmedText(state["recordedTaskSessionId"]);
+            if state["taskRecordingActive"] {
+                setClawStatus("Stop recording before generating the task.");
+                return;
+            }
+            if not recorded_session_id {
+                setClawStatus("Record a task first, then add context and generate it.");
+                return;
+            }
+            if state["taskCreateIsGenerating"] {
+                return;
+            }
+
+            state["taskCreateIsGenerating"] = True;
+            syncClawUi();
+            setClawStatus("Generating a saved task from the recorded trace...");
+
+            try {
+                trace_result = await fetchRecordedTaskTrace(recorded_session_id);
+                if not trace_result or objectValue(trace_result, "ok", True) == False {
+                    setClawStatus("Generate task failed: " + str(objectValue(trace_result, "error", "trace unavailable")));
+                    return;
+                }
+
+                trace_data = objectValue(trace_result, "trace", {}) or {};
+                state["activeSessionId"] = recorded_session_id;
+                state["activeWorkflowId"] = "";
+                syncLayerStateLabels();
+
+                compile_result = await compileActiveTrace();
+                if not compile_result or objectValue(compile_result, "ok", True) == False {
+                    setClawStatus("Generate task failed because compile failed: " + str(objectValue(compile_result, "error", "unknown error")));
+                    return;
+                }
+
+                helper_name = buildRecordedTaskName(trace_data, state["taskCreateContextText"]);
+                helper_goal = buildRecordedTaskGoal(trace_data, state["taskCreateContextText"], compile_result);
+                helper_spec = buildHelperSpec(helper_name, helper_goal, "once");
+                helper_spec["source"] = {
+                    "kind": "recorded_trace",
+                    "sessionId": recorded_session_id,
+                    "workflowId": trimmedText(objectValue(compile_result, "workflow_id", "")),
+                    "eventCount": taskTraceEventCount(trace_data)
+                };
+
+                saveHelperRecord(
+                    helper_name,
+                    helper_goal,
+                    "once",
+                    helper_spec,
+                    "Helper created from recorded task " + recorded_session_id + ".\n" +
+                    "Workflow: " + trimmedText(objectValue(compile_result, "workflow_id", "")) + "\n" +
+                    "Stored locally in this renderer session as a demo helper.",
+                    "Helper ready: " + helper_name + " (from recorded trace)"
+                );
+
+                state["taskCreateContextText"] = "";
+                state["recordedTaskSessionId"] = "";
+                state["recordedTaskEventCount"] = 0;
+                closeHelperBuilder(False);
+            } finally {
+                state["taskCreateIsGenerating"] = False;
+                syncClawUi();
+            }
+        }
+
         """R: Create a lightweight local helper without exposing internal spec details in the UI.
         M: Validates the simple builder fields, infers a helper type, stores a renderer-local read-only helper record, and posts a confirmation to Claw.
         E: Missing name or goal keeps the builder open and reports an honest prompt instead of creating a partial helper.
@@ -1536,61 +2050,79 @@ cl {
             }
 
             helper_spec = buildHelperSpec(helper_name, helper_goal, helper_frequency);
-            helper = {
-                "id": nextHelperId(),
-                "name": helper_name,
-                "goal": helper_goal,
-                "frequency": helper_frequency,
-                "frequencyLabel": helperFrequencyLabel(helper_frequency),
-                "kind": objectValue(helper_spec, "type", "general"),
-                "readOnly": True,
-                "createdAt": localTimestamp(),
-                "spec": helper_spec
-            };
-            state["helpers"].push(helper);
-            state["selectedHelperId"] = helper["id"];
-            state["helperEditMode"] = False;
-            state["helperEditGoalDraft"] = helper_goal;
-
-            appendClawTranscript(
-                "system",
+            saveHelperRecord(
+                helper_name,
+                helper_goal,
+                helper_frequency,
+                helper_spec,
                 "Helper created: " + helper_name + "\n" +
-                "Type: " + str(helper["kind"]) + "\n" +
-                "How often: " + helper["frequencyLabel"] + "\n" +
-                "Stored locally in this renderer session as a demo helper."
+                "Type: " + str(objectValue(helper_spec, "type", "general")) + "\n" +
+                "How often: " + helperFrequencyLabel(helper_frequency) + "\n" +
+                "Stored locally in this renderer session as a demo helper.",
+                "Helper ready: " + helper_name + " (" + helperFrequencyLabel(helper_frequency) + ")"
             );
-            setClawStatus("Helper ready: " + helper_name + " (" + helper["frequencyLabel"] + ")");
             closeHelperBuilder(True);
         }
 
-        """R: Let the small helper list acknowledge a run request without pretending backend execution exists.
-        M: Finds the local helper record, writes a transcript/status confirmation, and leaves the helper definition unchanged.
-        E: Unknown helper ids are ignored so stale DOM buttons cannot break the renderer.
+        def clearTaskRunOverride() -> None {
+            state["taskRunOverrideText"] = "";
+            syncClawUi();
+        }
+
+        """R: Launch the TASKS run flow without mutating the saved helper definition.
+        M: Reads the run-tab selection and temporary guidance, records a local demo run, and clears the one-run note afterwards.
+        E: Missing selections surface an honest status message instead of recording a fake run.
         """;
-        def handleHelperRunNow(helperId: any) -> None {
+        def handleTaskPanelRun() -> None {
+            helper = selectedTaskRunHelper();
+            if not helper {
+                setClawStatus("Select a saved task before running it.");
+                return;
+            }
+
+            handleHelperRunNow(objectValue(helper, "id", ""), state["taskRunOverrideText"], "tasks_panel");
+            state["taskRunOverrideText"] = "";
+            syncClawUi();
+        }
+
+        """R: Let saved helpers acknowledge a local run request without pretending backend execution exists.
+        M: Finds the helper, records a renderer-local run result, and optionally includes one-run guidance without changing saved instructions.
+        E: Unknown helper ids are ignored so stale DOM actions cannot break the renderer, and blank overrides are treated as absent.
+        """;
+        def handleHelperRunNow(helperId: any, runOverride: any = "", runSource: any = "helpers") -> None {
             helper = findHelperById(helperId);
             if not helper {
                 return;
             }
 
             helper_name = trimmedText(objectValue(helper, "name", "Helper"));
+            override_text = trimmedText(runOverride);
+            notes = [
+                "Goal snapshot: " + helperGoalPreview(objectValue(helper, "goal", ""), 132),
+                "Execution and scheduling are not wired yet; this result stays in renderer memory only."
+            ];
+            if override_text {
+                notes.push("Run-only guidance: " + helperGoalPreview(override_text, 132));
+            }
             state["selectedHelperId"] = str(objectValue(helper, "id", ""));
+            state["selectedTaskRunHelperId"] = str(objectValue(helper, "id", ""));
             recordHelperResult(
                 objectValue(helper, "id", ""),
                 "renderer_local_demo",
                 "recorded",
-                "Captured a local demo run request for " + helper_name + ".",
-                [
-                    "Goal snapshot: " + helperGoalPreview(objectValue(helper, "goal", ""), 132),
-                    "Execution and scheduling are not wired yet; this result stays in renderer memory only."
-                ]
+                "Captured a local demo run request for " + helper_name + (" with one-run guidance." if override_text else "."),
+                notes
             );
             appendClawTranscript(
                 "system",
                 "Local run requested for " + helper_name + ".\n" +
+                ("Temporary run guidance applied for this one launch only.\n" if override_text else "") +
                 "This demo stores the helper spec in renderer memory only, so execution and scheduling are not wired yet."
             );
-            setClawStatus("Local helper run noted for " + helper_name + ".");
+            setClawStatus(
+                "Saved task run noted for " + helper_name +
+                (" with one-run guidance." if override_text and str(runSource or "") == "tasks_panel" else ".")
+            );
         }
 
         def setTabTitle(tab: any, titleText: any) -> None {
@@ -2083,13 +2615,12 @@ cl {
             });
         }
 
-        state["toggleLayersBtn"].addEventListener("click", lambda {
-            if not state["layerPanel"] {
-                return;
-            }
-            collapsed = state["layerPanel"].classList.toggle("collapsed");
-            state["toggleLayersBtn"].setAttribute("aria-pressed", str(not collapsed));
-        });
+        if state["toggleLayersBtn"] {
+            state["toggleLayersBtn"].addEventListener("click", lambda {
+                state["tasksPanelOpen"] = not state["tasksPanelOpen"];
+                syncTasksPanelUi();
+            });
+        }
 
         bookmarkButtons = document.querySelectorAll(".bookmark-item[data-nav-url]");
         for bookmarkButton in bookmarkButtons {
@@ -2111,81 +2642,89 @@ cl {
             });
         }
 
-        state["startTraceBtn"].addEventListener("click", lambda {
-            async def handle {
-                webview = getActiveWebview();
-                url = DEFAULT_URL;
-                if webview and webview.getURL() {
-                    url = webview.getURL();
-                } elif state["addressInput"] and state["addressInput"].value {
-                    url = state["addressInput"].value;
-                }
+        if state["startTraceBtn"] {
+            state["startTraceBtn"].addEventListener("click", lambda {
+                async def handle {
+                    webview = getActiveWebview();
+                    url = DEFAULT_URL;
+                    if webview and webview.getURL() {
+                        url = webview.getURL();
+                    } elif state["addressInput"] and state["addressInput"].value {
+                        url = state["addressInput"].value;
+                    }
 
-                api = browserAPI();
-                if not api or not api.layersStart {
-                    appendLayerLog("Start trace failed: browser bridge unavailable.");
-                    return;
-                }
-
-                try {
-                    result = await api.layersStart({"title": "Manual Trace", "url": url});
-                    if not result or objectValue(result, "ok", True) == False {
-                        appendLayerLog("Start trace failed: " + str(objectValue(result, "error", "unknown error")));
+                    api = browserAPI();
+                    if not api or not api.layersStart {
+                        appendLayerLog("Start trace failed: browser bridge unavailable.");
                         return;
                     }
-                    state["activeSessionId"] = objectValue(result, "session_id", "") or "";
-                    state["activeWorkflowId"] = "";
-                    syncLayerStateLabels();
-                    appendLayerLog("Started trace " + state["activeSessionId"]);
-                    setClawStatus("");
-                } except Exception as err {
-                    appendLayerLog("Start trace threw: " + str(err.message or err));
-                }
-            }
-            handle();
-        });
 
-        state["stopTraceBtn"].addEventListener("click", lambda {
-            async def handle {
-                if not state["activeSessionId"] {
-                    appendLayerLog("Stop trace skipped: no active session.");
-                    return;
+                    try {
+                        result = await api.layersStart({"title": "Manual Trace", "url": url});
+                        if not result or objectValue(result, "ok", True) == False {
+                            appendLayerLog("Start trace failed: " + str(objectValue(result, "error", "unknown error")));
+                            return;
+                        }
+                        state["activeSessionId"] = objectValue(result, "session_id", "") or "";
+                        state["activeWorkflowId"] = "";
+                        syncLayerStateLabels();
+                        appendLayerLog("Started trace " + state["activeSessionId"]);
+                        setClawStatus("");
+                    } except Exception as err {
+                        appendLayerLog("Start trace threw: " + str(err.message or err));
+                    }
                 }
-                api = browserAPI();
-                if not api or not api.layersStop {
-                    appendLayerLog("Stop trace failed: browser bridge unavailable.");
-                    return;
-                }
-                try {
-                    result = await api.layersStop({"session_id": state["activeSessionId"]});
-                    if not result or objectValue(result, "ok", True) == False {
-                        appendLayerLog("Stop trace failed: " + str(objectValue(result, "error", "unknown error")));
+                handle();
+            });
+        }
+
+        if state["stopTraceBtn"] {
+            state["stopTraceBtn"].addEventListener("click", lambda {
+                async def handle {
+                    if not state["activeSessionId"] {
+                        appendLayerLog("Stop trace skipped: no active session.");
                         return;
                     }
-                    appendLayerLog("Stopped trace " + state["activeSessionId"] + " (" + str(objectValue(result, "event_count", 0)) + " events)");
-                    state["activeWorkflowId"] = "";
-                    syncLayerStateLabels();
-                    setClawStatus("Trace stopped. Start Trace again before using Plan now.");
-                } except Exception as err {
-                    appendLayerLog("Stop trace threw: " + str(err.message or err));
+                    api = browserAPI();
+                    if not api or not api.layersStop {
+                        appendLayerLog("Stop trace failed: browser bridge unavailable.");
+                        return;
+                    }
+                    try {
+                        result = await api.layersStop({"session_id": state["activeSessionId"]});
+                        if not result or objectValue(result, "ok", True) == False {
+                            appendLayerLog("Stop trace failed: " + str(objectValue(result, "error", "unknown error")));
+                            return;
+                        }
+                        appendLayerLog("Stopped trace " + state["activeSessionId"] + " (" + str(objectValue(result, "event_count", 0)) + " events)");
+                        state["activeWorkflowId"] = "";
+                        syncLayerStateLabels();
+                        setClawStatus("Trace stopped. Start Trace again before using Plan now.");
+                    } except Exception as err {
+                        appendLayerLog("Stop trace threw: " + str(err.message or err));
+                    }
                 }
-            }
-            handle();
-        });
+                handle();
+            });
+        }
 
-        state["compileTraceBtn"].addEventListener("click", lambda {
-            async def handle {
-                await compileActiveTrace();
-            }
-            handle();
-        });
+        if state["compileTraceBtn"] {
+            state["compileTraceBtn"].addEventListener("click", lambda {
+                async def handle {
+                    await compileActiveTrace();
+                }
+                handle();
+            });
+        }
 
-        state["planWorkflowBtn"].addEventListener("click", lambda {
-            async def handle {
-                await planActiveWorkflow();
-            }
-            handle();
-        });
+        if state["planWorkflowBtn"] {
+            state["planWorkflowBtn"].addEventListener("click", lambda {
+                async def handle {
+                    await planActiveWorkflow();
+                }
+                handle();
+            });
+        }
 
         if state["clawDraftInput"] {
             state["clawDraftInput"].addEventListener("input", lambda event {
@@ -2223,6 +2762,27 @@ cl {
             });
         }
 
+        if state["tasksPanelOpenHelpersBtn"] {
+            state["tasksPanelOpenHelpersBtn"].addEventListener("click", lambda {
+                if findHelperById(state["selectedTaskRunHelperId"]) {
+                    selectHelper(state["selectedTaskRunHelperId"]);
+                }
+                setShellView("helpers");
+            });
+        }
+
+        if state["tasksCreateTabBtn"] {
+            state["tasksCreateTabBtn"].addEventListener("click", lambda {
+                setTaskPanelTab("create");
+            });
+        }
+
+        if state["tasksRunTabBtn"] {
+            state["tasksRunTabBtn"].addEventListener("click", lambda {
+                setTaskPanelTab("run");
+            });
+        }
+
         if state["helperNameInput"] {
             state["helperNameInput"].addEventListener("input", lambda event {
                 target = event.currentTarget or event.target;
@@ -2253,6 +2813,32 @@ cl {
             });
         }
 
+        if state["taskPanelRecordBtn"] {
+            state["taskPanelRecordBtn"].addEventListener("click", lambda {
+                async def handle {
+                    await handleTaskPanelRecordToggle();
+                }
+                handle();
+            });
+        }
+
+        if state["taskCreateContextInput"] {
+            state["taskCreateContextInput"].addEventListener("input", lambda event {
+                target = event.currentTarget or event.target;
+                state["taskCreateContextText"] = str(target.value or "");
+                syncClawUi();
+            });
+        }
+
+        if state["taskPanelGenerateBtn"] {
+            state["taskPanelGenerateBtn"].addEventListener("click", lambda {
+                async def handle {
+                    await handleTaskPanelGenerate();
+                }
+                handle();
+            });
+        }
+
         if state["helperCancelBtn"] {
             state["helperCancelBtn"].addEventListener("click", lambda {
                 closeHelperBuilder(True);
@@ -2261,8 +2847,31 @@ cl {
 
         if state["helpersPageCreateBtn"] {
             state["helpersPageCreateBtn"].addEventListener("click", lambda {
-                setShellView("helpers");
+                if state["helperBuilderOpen"] {
+                    closeHelperBuilder(True);
+                    return;
+                }
                 openHelperBuilder();
+            });
+        }
+
+        if state["taskRunOverrideInput"] {
+            state["taskRunOverrideInput"].addEventListener("input", lambda event {
+                target = event.currentTarget or event.target;
+                state["taskRunOverrideText"] = str(target.value or "");
+                syncClawUi();
+            });
+        }
+
+        if state["taskPanelRunBtn"] {
+            state["taskPanelRunBtn"].addEventListener("click", lambda {
+                handleTaskPanelRun();
+            });
+        }
+
+        if state["taskPanelRunClearBtn"] {
+            state["taskPanelRunClearBtn"].addEventListener("click", lambda {
+                clearTaskRunOverride();
             });
         }
 

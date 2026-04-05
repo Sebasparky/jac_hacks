@@ -1,5 +1,6 @@
 {
   "name": "jac-hacks-browser",
+  "productName": "Jac Browser",
   "version": "0.1.0",
   "description": "Browser workflow compiler — record once, replay reliably",
   "private": true,

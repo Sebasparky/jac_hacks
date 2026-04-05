@@ -1,21 +1,37 @@
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
-const { execFile } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 
+const APP_DISPLAY_NAME = "Jac Browser";
+app.commandLine.appendSwitch("class", APP_DISPLAY_NAME);
 const JAC_SCRIPT_PATH = path.join(__dirname, "jac", "browser_core.jac");
 const WEBVIEW_PRELOAD_URL = pathToFileURL(path.join(__dirname, "webview_preload.js")).toString();
 const OBSERVATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "observation.jac");
 const COMPILATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "compilation.jac");
 const EXECUTION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "execution.jac");
+const LLM_RUNTIME_SCRIPT_PATH = path.join(__dirname, "jac", "llm", "runtime.jac");
 const CLIENT_INDEX_PATH = path.join(__dirname, ".jac", "client", "dist", "index.html");
-const DEFAULT_URL = "https://example.com";
+const APP_ICON_PATH = path.join(
+  __dirname,
+  "assets",
+  process.platform === "win32" ? "jac-browser-icon.ico" : "jac-browser-icon.png"
+);
+const DEFAULT_URL = "https://www.google.com";
 const RESTORE_BOUNDS = new WeakMap();
 const URL_CACHE_TTL_MS = 5 * 60 * 1000;
 const URL_CACHE_LIMIT = 160;
 const NORMALIZED_URL_CACHE = new Map();
 const NORMALIZED_URL_INFLIGHT = new Map();
+let llmRuntimeState = {
+  active: false,
+  provider: "kimi",
+  model: "",
+  thinking_mode: "",
+  reason: "Kimi runtime has not started yet"
+};
+let llmRuntimeStopped = false;
 
 /**
  * R: Build a stable cache key for URL normalization requests.
@@ -200,12 +216,91 @@ function runJacLayerCommand(scriptPath, command, payload = {}) {
 }
 
 /**
+ * R: Normalize one runtime lifecycle response into a stable renderer-facing shape.
+ * M: Extracts the nested runtime payload when present and falls back to an inactive record.
+ * E: Unexpected responses produce a safe inactive status instead of throwing.
+ */
+function runtimeStateFromResult(result, fallbackReason = "Kimi runtime unavailable") {
+  const runtime = result && typeof result === "object" && result.runtime && typeof result.runtime === "object"
+    ? result.runtime
+    : {};
+
+  return {
+    active: Boolean(runtime.active),
+    provider: String(runtime.provider || "kimi"),
+    model: String(runtime.model || ""),
+    thinking_mode: String(runtime.thinking_mode || ""),
+    started_at: String(runtime.started_at || ""),
+    stopped_at: String(runtime.stopped_at || ""),
+    updated_at: String(runtime.updated_at || ""),
+    source: String(runtime.source || ""),
+    reason: String(runtime.reason || fallbackReason)
+  };
+}
+
+/**
+ * R: Activate the browser-owned Kimi runtime before windows are created.
+ * M: Calls the Jac runtime lifecycle module and caches its status in memory.
+ * E: Failures degrade to an inactive state so the browser still opens normally.
+ */
+async function startLlmRuntime() {
+  llmRuntimeStopped = false;
+  try {
+    const result = await runJacLayerCommand(LLM_RUNTIME_SCRIPT_PATH, "start", {
+      source: "browser_startup"
+    });
+    llmRuntimeState = runtimeStateFromResult(result, "Kimi runtime failed to start");
+  } catch (err) {
+    llmRuntimeState = {
+      active: false,
+      provider: "kimi",
+      model: "",
+      thinking_mode: "",
+      started_at: "",
+      stopped_at: "",
+      updated_at: "",
+      source: "browser_startup",
+      reason: err.message || "Kimi runtime failed to start"
+    };
+  }
+
+  return llmRuntimeState;
+}
+
+/**
+ * R: Deactivate the browser-owned Kimi runtime during shutdown.
+ * M: Uses a synchronous Jac invocation so the state file is updated before process exit.
+ * E: Errors are swallowed after logging because shutdown should continue.
+ */
+function stopLlmRuntimeSync() {
+  if (llmRuntimeStopped) {
+    return llmRuntimeState;
+  }
+  llmRuntimeStopped = true;
+
+  try {
+    const stdout = execFileSync(
+      "jac",
+      ["run", LLM_RUNTIME_SCRIPT_PATH, "stop", JSON.stringify({ source: "browser_close" })],
+      { timeout: 4000, maxBuffer: 1024 * 1024 }
+    );
+    const parsed = JSON.parse(String(stdout || "").trim() || "{}");
+    llmRuntimeState = runtimeStateFromResult(parsed, "Kimi runtime stopped");
+  } catch (err) {
+    console.warn("[llm:stop]", err.message || err);
+  }
+
+  return llmRuntimeState;
+}
+
+/**
  * R: Build the desktop browser shell window.
  * M: Creates BrowserWindow with preload bridge and enabled webview tag.
  * E: Renderer owns navigation behavior; this only boots shell.
  */
 function createWindow() {
   const win = new BrowserWindow({
+    title: APP_DISPLAY_NAME,
     width: 1480,
     height: 940,
     minWidth: 980,
@@ -213,6 +308,7 @@ function createWindow() {
     frame: false,
     show: false,
     backgroundColor: "#edf4e3",
+    icon: fs.existsSync(APP_ICON_PATH) ? APP_ICON_PATH : undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -240,6 +336,15 @@ function createWindow() {
 
   console.warn("[window] Jac client bundle missing; falling back to legacy index.html");
   win.loadFile(path.join(__dirname, "index.html"));
+}
+
+app.setName(APP_DISPLAY_NAME);
+app.name = APP_DISPLAY_NAME;
+if (typeof app.setAppUserModelId === "function") {
+  app.setAppUserModelId("com.jac.browser");
+}
+if (process.platform === "linux" && typeof app.setDesktopName === "function") {
+  app.setDesktopName("jac-browser.desktop");
 }
 
 ipcMain.handle("window:minimize", (event) => {
@@ -303,6 +408,7 @@ ipcMain.handle("browser:normalize-url", async (_event, rawInput) => {
 });
 
 ipcMain.handle("browser:get-webview-preload-url", () => WEBVIEW_PRELOAD_URL);
+ipcMain.handle("browser:get-llm-status", async () => llmRuntimeState);
 
 ipcMain.handle("layers:start", async (_event, payload) => {
   try {
@@ -352,7 +458,8 @@ ipcMain.handle("layers:plan", async (_event, payload) => {
   }
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await startLlmRuntime();
   createWindow();
 
   app.on("activate", () => {
@@ -360,6 +467,10 @@ app.whenReady().then(() => {
       createWindow();
     }
   });
+});
+
+app.on("before-quit", () => {
+  stopLlmRuntimeSync();
 });
 
 app.on("window-all-closed", () => {

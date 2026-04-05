@@ -11,7 +11,7 @@ AI-assisted browser automation platform that can record real user workflows and 
 - [ ] Clean user interface with minimalist browser functionality.
 - [ ] User can "Record" a task, which an LLM turns into a repeatable instruction set.
 - [ ] Allow users to make entire workflows, which utilize tasks to increase speed and avoid unnecessary LLM usage.
-- [ ] Allow users to use whatever cloud or local LLM model they wish.
+- [ ] Allow users to use whatever cloud or local LLM model they wish, with Kimi 2.5 as the default compile-time provider.
 - [ ] Replay success rate is high enough to trust in day-to-day work (target: >90% on test workflows).
 - [ ] Users can inspect and edit generated task plans before execution.
 
@@ -96,7 +96,7 @@ Instead of asking an AI agent to reason from scratch on every click, this projec
 ### Stack
 - Primary language: Jac
 - Supporting libraries/tools: Python libraries allowed when needed.
-- AI backend tooling: `jac-coder`/`jac-mcp` capable environment (optional for IDE workflows).
+- AI backend tooling: `jac-coder`/`jac-mcp` capable environment (optional for IDE workflows), with Kimi 2.5 compile-time enrichment support.
 - App runtime (hackathon): Electron shell with Jac-backed URL normalization (`jac/browser_core.jac`).
 - Source policy: Jac-only authored code; no hand-written JavaScript files.
 - Replay engine: Playwright-style deterministic browser actions and resilient locators.
@@ -144,6 +144,9 @@ Replay deterministically at machine speed. Only invoke LLM when confidence drops
 ```bash
 # install deps
 npm install
+
+# configure Kimi compile-time enrichment
+# see .env.example for the full set of vars
 
 # launch browser runtime (Jac launcher -> Electron)
 npm start

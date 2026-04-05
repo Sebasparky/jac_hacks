@@ -2,8 +2,8 @@ import sys;
 import json;
 import from urllib.parse { quote_plus }
 
-glob DEFAULT_URL: str = "https://example.com";
-glob SEARCH_URL: str = "https://duckduckgo.com/?q=";
+glob DEFAULT_URL: str = "https://www.google.com";
+glob SEARCH_URL: str = "https://www.google.com/search?q=";
 
 """R: Encode text for URL query usage.
 M: Trims and URL-encodes query content with quote_plus.

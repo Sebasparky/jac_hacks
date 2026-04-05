@@ -20,6 +20,12 @@ import from jac.layers.compilation {
     compile_segmented_recording,
     validate_compiled_artifact
 }
+import from jac.llm.kimi_client {
+    build_kimi_compile_request,
+    build_ollama_chat_request,
+    build_kimi_cli_prompt,
+    parse_json_object_text
+}
 import from typing { Any }
 
 glob COUNTS: dict[str, int] = {"passed": 0, "failed": 0};
@@ -358,6 +364,135 @@ def test_compile_session_live_schema() {
     assert_true("live schema: missing ids are synthesized", first_source_id.startswith("evt_sess_live_1_"));
 }
 
+def test_compile_session_uses_user_explanation_context() {
+    session: dict[str, Any] = {
+        "session_id": "sess_live_explain",
+        "source_url": "https://app.example.com/invoices",
+        "goalContext": "Review overdue invoices",
+        "userExplanation": "Repeat the review for each overdue invoice and download the matching PDF before moving on.",
+        "events": [
+            {
+                "type": "navigate",
+                "url": "https://app.example.com/invoices",
+                "recorded_at": ts(0),
+                "target": {}
+            },
+            {
+                "type": "click",
+                "url": "https://app.example.com/invoices",
+                "recorded_at": ts(1000),
+                "target": {"tag": "button", "text": "Download PDF", "label": "Download PDF"}
+            }
+        ]
+    };
+
+    result: dict[str, Any] = compile_session(session, DEFAULT_OPTIONS);
+    assert_true("explain: compile ok", bool(result.get("ok", False)));
+
+    wf: Any = result.get("workflow", {});
+    context: Any = wf.get("context", {});
+    provided: Any = context.get("userProvidedContext", []);
+    assert_eq("explain: goal stays primary workflow goal", str(context.get("goal", "")), "Review overdue invoices");
+    assert_true(
+        "explain: user explanation is preserved in compile context",
+        isinstance(provided, list) and "Repeat the review for each overdue invoice and download the matching PDF before moving on." in provided
+    );
+}
+
+def test_kimi_compile_request_includes_user_explanation() {
+    raw_session: dict[str, Any] = {
+        "events": [],
+        "semantic": {}
+    };
+    normalized_session: dict[str, Any] = {
+        "goalContext": "Review overdue invoices",
+        "userExplanation": "The workflow loops through each overdue invoice and downloads the PDF.",
+        "startUrl": "https://app.example.com/invoices",
+        "status": "stopped"
+    };
+    cleaned: dict[str, Any] = {"events": []};
+    partial: dict[str, Any] = {
+        "name": "Review overdue invoices",
+        "context": {"goal": "Review overdue invoices"},
+        "inputs": [],
+        "steps": [{"type": "goto"}]
+    };
+    payload: dict[str, Any] = build_kimi_compile_request(
+        raw_session,
+        normalized_session,
+        cleaned,
+        partial,
+        {"model": "kimi-k2.5", "thinking_mode": "disabled"}
+    );
+    messages: Any = payload.get("messages", []);
+    user_content: str = "";
+    if isinstance(messages, list) and len(messages) > 2 and isinstance(messages[2], dict) {
+        user_content = str(messages[2].get("content", ""));
+    }
+    assert_true("kimi request: user explanation included", "\"user_explanation\": \"The workflow loops through each overdue invoice and downloads the PDF.\"" in user_content);
+}
+
+def test_kimi_cli_prompt_includes_user_explanation() {
+    prompt: str = build_kimi_cli_prompt(
+        {"events": []},
+        {
+            "goalContext": "Review overdue invoices",
+            "userExplanation": "The workflow loops through each overdue invoice and downloads the PDF.",
+            "startUrl": "https://app.example.com/invoices",
+            "status": "stopped"
+        },
+        {"events": []},
+        {
+            "name": "Review overdue invoices",
+            "context": {"goal": "Review overdue invoices"},
+            "inputs": [],
+            "steps": [{"type": "goto"}]
+        }
+    );
+
+    assert_true("kimi cli prompt: includes JSON contract", "Return exactly one JSON object." in prompt);
+    assert_true("kimi cli prompt: user explanation included", "\"user_explanation\": \"The workflow loops through each overdue invoice and downloads the PDF.\"" in prompt);
+}
+
+def test_ollama_request_includes_json_mode_and_user_explanation() {
+    payload: dict[str, Any] = build_ollama_chat_request(
+        {"events": []},
+        {
+            "goalContext": "Review overdue invoices",
+            "userExplanation": "The workflow loops through each overdue invoice and downloads the PDF.",
+            "startUrl": "https://app.example.com/invoices",
+            "status": "stopped"
+        },
+        {"events": []},
+        {
+            "name": "Review overdue invoices",
+            "context": {"goal": "Review overdue invoices"},
+            "inputs": [],
+            "steps": [{"type": "goto"}]
+        },
+        {"model": "qwen2.5:3b-instruct-q4_0"}
+    );
+
+    assert_eq("ollama request: format json", str(payload.get("format", "")), "json");
+    assert_eq("ollama request: stream disabled", bool(payload.get("stream", True)), False);
+    messages: Any = payload.get("messages", []);
+    user_content: str = "";
+    if isinstance(messages, list) and len(messages) > 2 and isinstance(messages[2], dict) {
+        user_content = str(messages[2].get("content", ""));
+    }
+    assert_true("ollama request: user explanation included", "\"user_explanation\": \"The workflow loops through each overdue invoice and downloads the PDF.\"" in user_content);
+}
+
+def test_parse_json_object_text_accepts_fenced_json() {
+    parsed: dict[str, Any] = parse_json_object_text(
+        """```json
+{"ok": true, "name": "compiled"}
+```"""
+    );
+    assert_eq("kimi parse: fenced json ok", bool(parsed.get("ok", False)), True);
+    assert_eq("kimi parse: fenced json name", str(parsed.get("name", "")), "compiled");
+}
+
 def test_validate_rejects_partial() {
     bad: dict[str, Any] = {"name": "broken", "steps": []};
     r: dict[str, Any] = validate_workflow(bad);
@@ -675,8 +810,13 @@ with entry {
     test_compile_session();
     test_masked_input_becomes_secret();
     test_compile_session_live_schema();
+    test_compile_session_uses_user_explanation_context();
     test_validate_rejects_partial();
     test_infer_safety_rules();
+    test_kimi_compile_request_includes_user_explanation();
+    test_kimi_cli_prompt_includes_user_explanation();
+    test_ollama_request_includes_json_mode_and_user_explanation();
+    test_parse_json_object_text_accepts_fenced_json();
 
     test_seg_only_one_time();
     test_seg_only_repeated();

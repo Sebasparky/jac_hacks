@@ -26,10 +26,11 @@ const NORMALIZED_URL_CACHE = new Map();
 const NORMALIZED_URL_INFLIGHT = new Map();
 let llmRuntimeState = {
   active: false,
-  provider: "kimi",
+  provider: "",
+  transport: "",
   model: "",
   thinking_mode: "",
-  reason: "Kimi runtime has not started yet"
+  reason: "LLM runtime has not started yet"
 };
 let llmRuntimeStopped = false;
 
@@ -220,14 +221,15 @@ function runJacLayerCommand(scriptPath, command, payload = {}) {
  * M: Extracts the nested runtime payload when present and falls back to an inactive record.
  * E: Unexpected responses produce a safe inactive status instead of throwing.
  */
-function runtimeStateFromResult(result, fallbackReason = "Kimi runtime unavailable") {
+function runtimeStateFromResult(result, fallbackReason = "LLM runtime unavailable") {
   const runtime = result && typeof result === "object" && result.runtime && typeof result.runtime === "object"
     ? result.runtime
     : {};
 
   return {
     active: Boolean(runtime.active),
-    provider: String(runtime.provider || "kimi"),
+    provider: String(runtime.provider || ""),
+    transport: String(runtime.transport || ""),
     model: String(runtime.model || ""),
     thinking_mode: String(runtime.thinking_mode || ""),
     started_at: String(runtime.started_at || ""),
@@ -239,7 +241,7 @@ function runtimeStateFromResult(result, fallbackReason = "Kimi runtime unavailab
 }
 
 /**
- * R: Activate the browser-owned Kimi runtime before windows are created.
+ * R: Activate the browser-owned compile runtime before windows are created.
  * M: Calls the Jac runtime lifecycle module and caches its status in memory.
  * E: Failures degrade to an inactive state so the browser still opens normally.
  */
@@ -249,18 +251,19 @@ async function startLlmRuntime() {
     const result = await runJacLayerCommand(LLM_RUNTIME_SCRIPT_PATH, "start", {
       source: "browser_startup"
     });
-    llmRuntimeState = runtimeStateFromResult(result, "Kimi runtime failed to start");
+    llmRuntimeState = runtimeStateFromResult(result, "LLM runtime failed to start");
   } catch (err) {
     llmRuntimeState = {
       active: false,
-      provider: "kimi",
+      provider: "",
+      transport: "",
       model: "",
       thinking_mode: "",
       started_at: "",
       stopped_at: "",
       updated_at: "",
       source: "browser_startup",
-      reason: err.message || "Kimi runtime failed to start"
+      reason: err.message || "LLM runtime failed to start"
     };
   }
 
@@ -268,7 +271,7 @@ async function startLlmRuntime() {
 }
 
 /**
- * R: Deactivate the browser-owned Kimi runtime during shutdown.
+ * R: Deactivate the browser-owned compile runtime during shutdown.
  * M: Uses a synchronous Jac invocation so the state file is updated before process exit.
  * E: Errors are swallowed after logging because shutdown should continue.
  */
@@ -285,7 +288,7 @@ function stopLlmRuntimeSync() {
       { timeout: 4000, maxBuffer: 1024 * 1024 }
     );
     const parsed = JSON.parse(String(stdout || "").trim() || "{}");
-    llmRuntimeState = runtimeStateFromResult(parsed, "Kimi runtime stopped");
+    llmRuntimeState = runtimeStateFromResult(parsed, "LLM runtime stopped");
   } catch (err) {
     console.warn("[llm:stop]", err.message || err);
   }

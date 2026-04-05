@@ -988,6 +988,14 @@ body {
   transform: translateY(-1px);
 }
 
+.layer-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  background: rgba(233, 239, 249, 0.88);
+  border-color: rgba(88, 116, 173, 0.1);
+  transform: none;
+}
+
 .layer-panel-state {
   display: grid;
   grid-template-columns: 1fr 1fr;

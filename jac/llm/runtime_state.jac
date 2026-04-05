@@ -1,8 +1,8 @@
 """
-Jac-native Kimi runtime state helpers.
+Jac-native LLM runtime state helpers.
 
 Purpose:
-- Keep browser-owned Kimi lifecycle state in one small JSON file.
+- Keep browser-owned compile-enrichment runtime state in one small JSON file.
 - Expose pure functions that other Jac modules can import safely.
 - Avoid CLI side effects when compilation imports runtime status.
 """
@@ -37,10 +37,11 @@ def ensure_llm_dir() {
 M: Returns a consistent shape even before the browser has started once.
 E: `reason` is caller-controlled so status messages remain explicit.
 """
-def default_runtime_state(reason: str = "Kimi runtime inactive") -> dict[str, Any] {
+def default_runtime_state(reason: str = "LLM runtime inactive") -> dict[str, Any] {
     return {
         "active": False,
-        "provider": "kimi",
+        "provider": "",
+        "transport": "",
         "model": "",
         "thinking_mode": "",
         "started_at": "",
@@ -51,13 +52,13 @@ def default_runtime_state(reason: str = "Kimi runtime inactive") -> dict[str, An
     };
 }
 
-"""R: Read the persisted browser-owned Kimi runtime state from disk.
+"""R: Read the persisted browser-owned LLM runtime state from disk.
 M: Loads JSON when present and falls back to a normalized inactive shape otherwise.
 E: Invalid files degrade to inactive state rather than failing callers.
 """
 def read_runtime_state() -> dict[str, Any] {
     if not os.path.exists(LLM_RUNTIME_FILE) {
-        return default_runtime_state("Kimi runtime has not started yet");
+        return default_runtime_state("LLM runtime has not started yet");
     }
 
     try {
@@ -66,7 +67,8 @@ def read_runtime_state() -> dict[str, Any] {
             if isinstance(parsed, dict) {
                 return {
                     "active": bool(parsed.get("active", False)),
-                    "provider": str(parsed.get("provider", "kimi")),
+                    "provider": str(parsed.get("provider", "")),
+                    "transport": str(parsed.get("transport", "")),
                     "model": str(parsed.get("model", "")),
                     "thinking_mode": str(parsed.get("thinking_mode", "")),
                     "started_at": str(parsed.get("started_at", "")),
@@ -78,12 +80,12 @@ def read_runtime_state() -> dict[str, Any] {
             }
         }
     } except json.JSONDecodeError {
-        return default_runtime_state("Kimi runtime state was unreadable");
+        return default_runtime_state("LLM runtime state was unreadable");
     } except OSError {
-        return default_runtime_state("Kimi runtime state could not be read");
+        return default_runtime_state("LLM runtime state could not be read");
     }
 
-    return default_runtime_state("Kimi runtime state was invalid");
+    return default_runtime_state("LLM runtime state was invalid");
 }
 
 """R: Persist one normalized runtime state record.
@@ -97,7 +99,7 @@ def write_runtime_state(state: dict[str, Any]) {
     }
 }
 
-"""R: Return the current browser-owned runtime status for Kimi.
+"""R: Return the current browser-owned runtime status for compile enrichment.
 M: Reads the persisted state file and normalizes its fields.
 E: Missing state yields an inactive status payload.
 """
@@ -105,16 +107,17 @@ def current_runtime_state() -> dict[str, Any] {
     return read_runtime_state();
 }
 
-"""R: Activate Kimi compile enrichment for the current browser lifecycle.
-M: Resolves config, writes an active state when credentials are valid, and returns status.
-E: Missing or placeholder credentials produce an inactive status with a clear reason.
+"""R: Activate compile enrichment for the current browser lifecycle.
+M: Resolves config, writes an active state when the selected provider is valid, and returns status.
+E: Missing credentials, offline local servers, or missing models produce an inactive reason.
 """
 def start_runtime(payload: dict[str, Any]) -> dict[str, Any] {
     source: str = str(payload.get("source", "browser_startup"));
     config: dict[str, Any] = resolve_kimi_compile_config();
 
-    state: dict[str, Any] = default_runtime_state("Kimi runtime inactive");
-    state["provider"] = "kimi";
+    state: dict[str, Any] = default_runtime_state("LLM runtime inactive");
+    state["provider"] = str(config.get("provider", ""));
+    state["transport"] = str(config.get("transport", ""));
     state["model"] = str(config.get("model", ""));
     state["thinking_mode"] = str(config.get("thinking_mode", ""));
     state["source"] = source;
@@ -124,17 +127,17 @@ def start_runtime(payload: dict[str, Any]) -> dict[str, Any] {
         state["active"] = True;
         state["started_at"] = timestamp_now();
         state["stopped_at"] = "";
-        state["reason"] = "Kimi runtime ready for compile-time enrichment";
+        state["reason"] = str(config.get("reason", "LLM runtime ready for compile-time enrichment"));
     } else {
         state["active"] = False;
-        state["reason"] = "Kimi config missing, placeholder, or compile use disabled";
+        state["reason"] = str(config.get("reason", "LLM config missing, offline, or compile use disabled"));
     }
 
     write_runtime_state(state);
     return {"ok": True, "runtime": state};
 }
 
-"""R: Deactivate the browser-owned Kimi runtime.
+"""R: Deactivate the browser-owned compile-enrichment runtime.
 M: Preserves provider/model info while marking the runtime inactive and timestamping shutdown.
 E: Safe to call even if the runtime was never activated.
 """
@@ -145,7 +148,7 @@ def stop_runtime(payload: dict[str, Any]) -> dict[str, Any] {
     state["updated_at"] = timestamp_now();
     state["stopped_at"] = timestamp_now();
     state["source"] = source;
-    state["reason"] = "Kimi runtime stopped on browser shutdown";
+    state["reason"] = "LLM runtime stopped on browser shutdown";
 
     write_runtime_state(state);
     return {"ok": True, "runtime": state};

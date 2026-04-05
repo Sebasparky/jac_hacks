@@ -507,33 +507,33 @@ M: Concatenates key event fields likely to indicate duplicate actions.
 E: Signature intentionally ignores timestamp and minor non-core metadata.
 """
 def event_signature(event_data: dict[str, Any]) -> str {
-    target = normalize_target(event_data.get("target", {}));
-    meta = normalize_meta(event_data.get("meta", {}));
-    viewport = normalize_viewport(event_data.get("viewport", {}));
-    semantic = normalize_semantic(event_data.get("semantic", {}));
-    network = normalize_network(event_data.get("network", {}));
-    dom_snapshot = normalize_dom_snapshot(event_data.get("dom_snapshot", {}));
+    target: dict[str, Any] = event_data.get("target", {}) if isinstance(event_data.get("target", {}), dict) else {};
+    meta: dict[str, Any] = event_data.get("meta", {}) if isinstance(event_data.get("meta", {}), dict) else {};
+    viewport: dict[str, Any] = event_data.get("viewport", {}) if isinstance(event_data.get("viewport", {}), dict) else {};
+    semantic: dict[str, Any] = event_data.get("semantic", {}) if isinstance(event_data.get("semantic", {}), dict) else {};
+    network: dict[str, Any] = event_data.get("network", {}) if isinstance(event_data.get("network", {}), dict) else {};
+    dom_snapshot: dict[str, Any] = event_data.get("dom_snapshot", {}) if isinstance(event_data.get("dom_snapshot", {}), dict) else {};
 
     return (
         safe_str(event_data.get("type", ""), 40) + "|" +
         safe_str(event_data.get("url", ""), 300) + "|" +
         safe_str(event_data.get("value", ""), 300) + "|" +
-        target["tag"] + "|" +
-        target["id"] + "|" +
-        target["name"] + "|" +
-        target["role"] + "|" +
-        target["type"] + "|" +
-        target["label"] + "|" +
-        target["text"] + "|" +
-        meta["source"] + "|" +
-        meta["trigger"] + "|" +
-        meta["tab_id"] + "|" +
-        meta["kind"] + "|" +
-        meta["method"] + "|" +
-        meta["request_url"] + "|" +
-        str(meta["status"]) + "|" +
-        str(viewport.get("scroll_y", 0)) + "|" +
-        str(viewport.get("scroll_progress", 0)) + "|" +
+        safe_str(target.get("tag", ""), 60) + "|" +
+        safe_str(target.get("id", ""), 120) + "|" +
+        safe_str(target.get("name", ""), 120) + "|" +
+        safe_str(target.get("role", ""), 80) + "|" +
+        safe_str(target.get("type", ""), 40) + "|" +
+        safe_str(target.get("label", ""), 140) + "|" +
+        safe_str(target.get("text", ""), 180) + "|" +
+        safe_str(meta.get("source", ""), 60) + "|" +
+        safe_str(meta.get("trigger", ""), 60) + "|" +
+        safe_str(meta.get("tab_id", ""), 80) + "|" +
+        safe_str(meta.get("kind", ""), 40) + "|" +
+        safe_str(meta.get("method", ""), 20) + "|" +
+        safe_str(meta.get("request_url", ""), 300) + "|" +
+        str(safe_int(meta.get("status", 0))) + "|" +
+        str(safe_int(viewport.get("scroll_y", 0))) + "|" +
+        str(safe_float(viewport.get("scroll_progress", 0))) + "|" +
         safe_str(semantic.get("page_kind", ""), 80) + "|" +
         safe_str(semantic.get("workflow_stage", ""), 80) + "|" +
         safe_str(network.get("request_url", ""), 300) + "|" +
@@ -578,14 +578,15 @@ def start_trace(payload: dict[str, Any]) -> dict[str, Any] {
 
     title = safe_str(payload.get("title", "Manual Trace"), 140);
     source_url = safe_str(payload.get("url", ""), 300);
+    now: str = timestamp_now();
 
     trace_data = {
         "session_id": session_id,
         "title": title,
         "source_url": source_url,
         "status": "recording",
-        "started_at": timestamp_now(),
-        "updated_at": timestamp_now(),
+        "started_at": now,
+        "updated_at": now,
         "telemetry_counts": {},
         "events": []
     };
@@ -693,9 +694,10 @@ def stop_trace(payload: dict[str, Any]) -> dict[str, Any] {
         return {"ok": False, "error": "trace not found", "session_id": session_id};
     }
 
+    now: str = timestamp_now();
     trace_data["status"] = "stopped";
-    trace_data["stopped_at"] = timestamp_now();
-    trace_data["updated_at"] = timestamp_now();
+    trace_data["stopped_at"] = now;
+    trace_data["updated_at"] = now;
     write_trace(session_id, trace_data);
 
     events: list[Any] = [];
@@ -763,13 +765,27 @@ def dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any] {
     };
 }
 
+"""R: Decide whether this module should execute its CLI entrypoint.
+M: Treats non-empty, non-path-like argv values as commands and ignores import-time script paths.
+E: Unknown direct commands still dispatch so the caller receives the usual usage payload.
+"""
+def should_dispatch_cli(command: str) -> bool {
+    if not command {
+        return False;
+    }
+
+    return ("/" not in command) and ("\\" not in command) and not command.endswith(".jac");
+}
+
 with entry {
     command: str = "";
     if len(sys.argv) > 1 {
         command = str(sys.argv[1]);
     }
 
-    payload = parse_payload();
-    result = dispatch(command, payload);
-    print(json.dumps(result));
+    if should_dispatch_cli(command) {
+        payload = parse_payload();
+        result = dispatch(command, payload);
+        print(json.dumps(result));
+    }
 }

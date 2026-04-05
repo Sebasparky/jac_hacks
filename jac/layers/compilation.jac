@@ -201,7 +201,10 @@ def normalize_compiler_session(session: dict[str, Any]) -> dict[str, Any] {
     start_url: str = str(session.get("startUrl", "") or session.get("source_url", ""));
     if start_url { normalized["startUrl"] = start_url; }
 
-    goal: str = str(session.get("goalContext", "") or session.get("title", ""));
+    user_explanation: str = str(session.get("userExplanation", "") or session.get("user_explanation", ""));
+    if user_explanation { normalized["userExplanation"] = user_explanation; }
+
+    goal: str = str(session.get("goalContext", "") or session.get("title", "") or user_explanation);
     if goal { normalized["goalContext"] = goal; }
 
     raw_events: Any = session.get("events", []);
@@ -784,11 +787,15 @@ def heuristic_compile(
 
     session_id: str = str(session.get("id", ""));
     goal: str = str(session.get("goalContext", ""));
+    user_explanation: str = str(session.get("userExplanation", ""));
     start_url: str = str(session.get("startUrl", ""));
     created_by: str = str(options.get("createdByUserId", ""));
     privacy: Any = options.get("privacy", {});
     if not isinstance(privacy, dict) { privacy = {}; }
     now: str = timestamp_now();
+    user_context: list[Any] = [];
+    if goal { user_context.append(goal); }
+    if user_explanation and user_explanation != goal { user_context.append(user_explanation); }
 
     safety: dict[str, Any] = {
         "allowedDomains": domains,
@@ -813,7 +820,7 @@ def heuristic_compile(
         },
         "context": {
             "goal": goal,
-            "userProvidedContext": [goal] if goal else []
+            "userProvidedContext": user_context
         },
         "inputs": inferred_inputs,
         "steps": steps,
@@ -1395,6 +1402,16 @@ def build_workflow(payload: dict[str, Any]) -> dict[str, Any] {
         return {"ok": False, "error": "trace not found", "session_id": session_id};
     }
 
+    user_explanation: str = str(payload.get("user_explanation", "") or "").strip();
+    if user_explanation {
+        trace_data["userExplanation"] = user_explanation;
+        current_goal: str = str(trace_data.get("goalContext", "") or "").strip();
+        current_title: str = str(trace_data.get("title", "") or "").strip();
+        if not current_goal and (not current_title or current_title == "Manual Trace") {
+            trace_data["goalContext"] = user_explanation;
+        }
+    }
+
     created_by: str = str(payload.get("created_by", "cli"));
     privacy_mode: str = str(payload.get("privacy_mode", "local"));
 
@@ -1554,6 +1571,18 @@ def dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any] {
     };
 }
 
+"""R: Decide whether this module should execute its CLI entrypoint.
+M: Treats non-empty, non-path-like argv values as commands and ignores import-time script paths.
+E: Unknown direct commands still dispatch so the caller gets the usual usage payload.
+"""
+def should_dispatch_cli(command: str) -> bool {
+    if not command {
+        return False;
+    }
+
+    return ("/" not in command) and ("\\" not in command) and not command.endswith(".jac");
+}
+
 # ============================================================
 # ENTRY POINT
 # ============================================================
@@ -1563,7 +1592,9 @@ with entry {
     if len(sys.argv) > 1 {
         command = str(sys.argv[1]);
     }
-    payload: dict[str, Any] = parse_payload();
-    result: dict[str, Any] = dispatch(command, payload);
-    print(json.dumps(result));
+    if should_dispatch_cli(command) {
+        payload: dict[str, Any] = parse_payload();
+        result: dict[str, Any] = dispatch(command, payload);
+        print(json.dumps(result));
+    }
 }

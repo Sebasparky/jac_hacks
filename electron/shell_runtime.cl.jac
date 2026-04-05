@@ -63,6 +63,8 @@ cl {
             "sessionIdLabel": document.getElementById("sessionIdLabel"),
             "workflowIdLabel": document.getElementById("workflowIdLabel"),
             "llmRuntimeLabel": document.getElementById("llmRuntimeLabel"),
+            "workflowExplanationPanel": document.getElementById("workflowExplanationPanel"),
+            "workflowExplanationInput": document.getElementById("workflowExplanationInput"),
             "layerLog": document.getElementById("layerLog"),
             "layerPanel": document.getElementById("layerPanel"),
             "clawTranscript": document.getElementById("clawTranscript"),
@@ -86,6 +88,8 @@ cl {
             "progressGuardTimeout": None,
             "activeSessionId": "",
             "activeWorkflowId": "",
+            "traceLifecycleState": "idle",
+            "workflowExplanationDraft": "",
             "clawDraft": "",
             "clawTranscriptMessages": [],
             "clawIsPlanning": False,
@@ -1389,6 +1393,53 @@ cl {
             }
         }
 
+        def traceIsRecording() -> bool {
+            return state["traceLifecycleState"] == "recording";
+        }
+
+        def traceReadyForCompile() -> bool {
+            return state["traceLifecycleState"] == "stopped" and trimmedText(state["activeSessionId"]) != "";
+        }
+
+        """R: Keep the manual layer flow aligned with the current trace lifecycle.
+        M: Enables the correct buttons for start/stop/compile/plan and reveals the optional explanation step only after recording stops.
+        E: Missing DOM nodes are ignored so the shell still boots if the layer panel is partially unavailable.
+        """;
+        def syncLayerFlowUi() -> None {
+            is_recording = traceIsRecording();
+            ready_to_compile = traceReadyForCompile();
+            has_workflow = trimmedText(state["activeWorkflowId"]) != "";
+
+            if state["startTraceBtn"] {
+                state["startTraceBtn"].disabled = is_recording;
+                state["startTraceBtn"].textContent = "Recording..." if is_recording else "Start Trace";
+            }
+            if state["stopTraceBtn"] {
+                state["stopTraceBtn"].disabled = not is_recording;
+            }
+            if state["compileTraceBtn"] {
+                state["compileTraceBtn"].disabled = not ready_to_compile;
+                state["compileTraceBtn"].textContent = "Compile Trace";
+                state["compileTraceBtn"].title = (
+                    "Stop the trace first. Then you can compile with the optional explanation."
+                    if not ready_to_compile else
+                    "Compile the stopped trace" + (" with the explanation draft." if trimmedText(state["workflowExplanationDraft"]) else ".")
+                );
+            }
+            if state["planWorkflowBtn"] {
+                state["planWorkflowBtn"].disabled = not has_workflow;
+            }
+            if state["workflowExplanationPanel"] {
+                state["workflowExplanationPanel"].style.display = "flex" if ready_to_compile else "none";
+            }
+            if state["workflowExplanationInput"] {
+                if state["workflowExplanationInput"].value != state["workflowExplanationDraft"] {
+                    state["workflowExplanationInput"].value = state["workflowExplanationDraft"];
+                }
+                state["workflowExplanationInput"].disabled = not ready_to_compile;
+            }
+        }
+
         async def syncLlmRuntimeStatus() -> None {
             api = browserAPI();
             if not state["llmRuntimeLabel"] {
@@ -1396,7 +1447,7 @@ cl {
             }
             if not api or not api.getLlmStatus {
                 state["llmRuntimeLabel"].textContent = "bridge-offline";
-                appendLayerLog("Kimi runtime status unavailable: browser bridge missing.");
+                appendLayerLog("LLM runtime status unavailable: browser bridge missing.");
                 return;
             }
 
@@ -1404,19 +1455,37 @@ cl {
                 runtime = await api.getLlmStatus();
                 active = bool(objectValue(runtime, "active", False));
                 provider = str(objectValue(runtime, "provider", "kimi") or "kimi");
+                transport = str(objectValue(runtime, "transport", "") or "");
                 model = str(objectValue(runtime, "model", "") or "");
                 reason = str(objectValue(runtime, "reason", "") or "");
+                lowered_reason = reason.toLowerCase();
 
                 if active {
                     state["llmRuntimeLabel"].textContent = provider + " on";
-                    appendLayerLog("Kimi runtime active" + (" (" + model + ")" if model else ""));
+                    appendLayerLog(
+                        "LLM runtime active" +
+                        (" via " + transport if transport else "") +
+                        (" (" + model + ")" if model else "")
+                    );
                 } else {
-                    state["llmRuntimeLabel"].textContent = "inactive";
-                    appendLayerLog("Kimi runtime inactive" + (": " + reason if reason else "."));
+                    if lowered_reason.includes("ollama pull") or (lowered_reason.includes("model `") and lowered_reason.includes("is not installed")) {
+                        state["llmRuntimeLabel"].textContent = "needs-model";
+                    } elif lowered_reason.includes("local ollama is not installed") or (lowered_reason.includes("ollama") and lowered_reason.includes("not installed")) {
+                        state["llmRuntimeLabel"].textContent = "needs-install";
+                    } elif lowered_reason.includes("kimi login") or lowered_reason.includes("not logged in") or lowered_reason.includes("llm not set") {
+                        state["llmRuntimeLabel"].textContent = "needs-login";
+                    } elif lowered_reason.includes("llm_api_key") or lowered_reason.includes("placeholder") or lowered_reason.includes("missing") {
+                        state["llmRuntimeLabel"].textContent = "needs-key";
+                    } elif lowered_reason.includes("disabled") {
+                        state["llmRuntimeLabel"].textContent = "disabled";
+                    } else {
+                        state["llmRuntimeLabel"].textContent = "inactive";
+                    }
+                    appendLayerLog("LLM runtime unavailable" + (": " + reason if reason else "."));
                 }
             } except Exception as err {
                 state["llmRuntimeLabel"].textContent = "error";
-                appendLayerLog("Kimi runtime status check failed: " + str(err.message or err));
+                appendLayerLog("LLM runtime status check failed: " + str(err.message or err));
             }
         }
 
@@ -1570,9 +1639,14 @@ cl {
         M: Validates the active session, calls the existing compile IPC path, updates workflow labels, and logs outcomes.
         E: Missing sessions, bridge methods, or thrown errors return `{ ok: false, error }` instead of crashing handlers.
         """;
-        async def compileActiveTrace() -> any {
+        async def compileActiveTrace(explanationOverride: any = None, allowLiveTrace: any = False) -> any {
             if not state["activeSessionId"] {
                 message = "Compile skipped: no session id.";
+                appendLayerLog(message);
+                return {"ok": False, "error": message};
+            }
+            if not allowLiveTrace and not traceReadyForCompile() {
+                message = "Compile skipped: stop the trace first, then add optional explanation.";
                 appendLayerLog(message);
                 return {"ok": False, "error": message};
             }
@@ -1584,8 +1658,18 @@ cl {
                 return {"ok": False, "error": message};
             }
 
+            explanation_text = trimmedText(explanationOverride);
+            if not explanation_text {
+                explanation_text = trimmedText(state["workflowExplanationDraft"]);
+            }
+
+            compile_payload = {"session_id": state["activeSessionId"]};
+            if explanation_text {
+                compile_payload["user_explanation"] = explanation_text;
+            }
+
             try {
-                result = await api.layersCompile({"session_id": state["activeSessionId"]});
+                result = await api.layersCompile(compile_payload);
                 if not result or objectValue(result, "ok", True) == False {
                     message = "Compile failed: " + str(objectValue(result, "error", "unknown error"));
                     appendLayerLog(message);
@@ -1594,7 +1678,18 @@ cl {
 
                 state["activeWorkflowId"] = objectValue(result, "workflow_id", "") or "";
                 syncLayerStateLabels();
-                appendLayerLog("Compiled workflow " + state["activeWorkflowId"] + " (" + str(objectValue(result, "step_count", 0)) + " steps)");
+                appendLayerLog(
+                    "Compiled workflow " + state["activeWorkflowId"] +
+                    " (" + str(objectValue(result, "step_count", 0)) + " steps)" +
+                    (" using the explanation draft." if explanation_text else "")
+                );
+                compile_warnings = objectValue(result, "warnings", []) or [];
+                if compile_warnings and typeof(compile_warnings.length) != "undefined" {
+                    for warning in compile_warnings {
+                        appendLayerLog("Compile warning: " + str(warning or ""));
+                    }
+                }
+                syncLayerFlowUi();
                 return result;
             } except Exception as err {
                 message = "Compile threw: " + str(err.message or err);
@@ -1676,7 +1771,7 @@ cl {
                     return;
                 }
 
-                compile_result = await compileActiveTrace();
+                compile_result = await compileActiveTrace(draft_text, True);
                 if not compile_result or objectValue(compile_result, "ok", True) == False {
                     appendClawTranscript("error", "Plan could not continue because compile failed: " + str(objectValue(compile_result, "error", "unknown error")));
                     setClawStatus("Plan blocked because compile failed.");
@@ -1918,11 +2013,14 @@ cl {
                     }
                     state["activeSessionId"] = objectValue(result, "session_id", "") or "";
                     state["activeWorkflowId"] = "";
+                    state["traceLifecycleState"] = "recording";
+                    state["workflowExplanationDraft"] = "";
                     state["taskRecordingActive"] = True;
                     state["recordedTaskSessionId"] = "";
                     state["recordedTaskEventCount"] = 0;
                     state["taskCreateContextText"] = "";
                     syncLayerStateLabels();
+                    syncLayerFlowUi();
                     setClawStatus("Recording task flow now. Browse normally, then click Stop.");
                     syncClawUi();
                     return;
@@ -1950,7 +2048,9 @@ cl {
                 state["recordedTaskSessionId"] = active_session_id;
                 state["recordedTaskEventCount"] = Number(objectValue(result, "event_count", 0));
                 state["activeWorkflowId"] = "";
+                state["traceLifecycleState"] = "stopped";
                 syncLayerStateLabels();
+                syncLayerFlowUi();
                 setClawStatus("Recording stopped. Add context, then generate the saved task.");
                 syncClawUi();
                 setTimeout(lambda {
@@ -1997,7 +2097,7 @@ cl {
                 state["activeWorkflowId"] = "";
                 syncLayerStateLabels();
 
-                compile_result = await compileActiveTrace();
+                compile_result = await compileActiveTrace(state["taskCreateContextText"]);
                 if not compile_result or objectValue(compile_result, "ok", True) == False {
                     setClawStatus("Generate task failed because compile failed: " + str(objectValue(compile_result, "error", "unknown error")));
                     return;
@@ -2658,7 +2758,6 @@ cl {
                         appendLayerLog("Start trace failed: browser bridge unavailable.");
                         return;
                     }
-
                     try {
                         result = await api.layersStart({"title": "Manual Trace", "url": url});
                         if not result or objectValue(result, "ok", True) == False {
@@ -2667,7 +2766,10 @@ cl {
                         }
                         state["activeSessionId"] = objectValue(result, "session_id", "") or "";
                         state["activeWorkflowId"] = "";
+                        state["traceLifecycleState"] = "recording";
+                        state["workflowExplanationDraft"] = "";
                         syncLayerStateLabels();
+                        syncLayerFlowUi();
                         appendLayerLog("Started trace " + state["activeSessionId"]);
                         setClawStatus("");
                     } except Exception as err {
@@ -2698,8 +2800,13 @@ cl {
                         }
                         appendLayerLog("Stopped trace " + state["activeSessionId"] + " (" + str(objectValue(result, "event_count", 0)) + " events)");
                         state["activeWorkflowId"] = "";
+                        state["traceLifecycleState"] = "stopped";
                         syncLayerStateLabels();
-                        setClawStatus("Trace stopped. Start Trace again before using Plan now.");
+                        syncLayerFlowUi();
+                        setClawStatus("Trace stopped. Add optional explanation, then compile.");
+                        if state["workflowExplanationInput"] {
+                            setTimeout(lambda { state["workflowExplanationInput"].focus(); }, 10);
+                        }
                     } except Exception as err {
                         appendLayerLog("Stop trace threw: " + str(err.message or err));
                     }
@@ -2734,6 +2841,14 @@ cl {
                     state["clawStatusText"] = "";
                     syncClawUi();
                 }
+            });
+        }
+
+        if state["workflowExplanationInput"] {
+            state["workflowExplanationInput"].addEventListener("input", lambda event {
+                target = event.currentTarget or event.target;
+                state["workflowExplanationDraft"] = str(target.value or "");
+                syncLayerFlowUi();
             });
         }
 
@@ -2877,6 +2992,7 @@ cl {
 
         async def initialize() -> None {
             syncLayerStateLabels();
+            syncLayerFlowUi();
             appendClawTranscript("system", "Claw is ready. Type the task below. Plan now uses the active live trace. Save draft keeps the text in this browser shell only.");
             syncClawUi();
             await syncLlmRuntimeStatus();

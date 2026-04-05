@@ -145,8 +145,9 @@ Replay deterministically at machine speed. Only invoke LLM when confidence drops
 # install deps
 npm install
 
-# configure Kimi compile-time enrichment
-# see .env.example for the full set of vars
+# configure local compile-time enrichment
+# install a truly local Ollama model once
+ollama pull qwen2.5:3b-instruct-q4_0
 
 # launch browser runtime (Jac launcher -> Electron)
 npm start

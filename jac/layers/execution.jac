@@ -942,13 +942,27 @@ def dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any] {
     };
 }
 
+"""R: Decide whether this module should execute its CLI entrypoint.
+M: Treats non-empty, non-path-like argv values as commands and ignores import-time script paths.
+E: Unknown direct commands still dispatch so the caller gets the usual usage payload.
+"""
+def should_dispatch_cli(command: str) -> bool {
+    if not command {
+        return False;
+    }
+
+    return ("/" not in command) and ("\\" not in command) and not command.endswith(".jac");
+}
+
 with entry {
     command: str = "";
     if len(sys.argv) > 1 {
         command = str(sys.argv[1]);
     }
 
-    payload = parse_payload();
-    result = dispatch(command, payload);
-    print(json.dumps(result));
+    if should_dispatch_cli(command) {
+        payload = parse_payload();
+        result = dispatch(command, payload);
+        print(json.dumps(result));
+    }
 }

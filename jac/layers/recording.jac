@@ -119,6 +119,24 @@ def read_recording(recording_id: str) -> dict[str, Any] {
     return {};
 }
 
+"""R: Load the recording referenced by a command payload.
+M: Extracts `recording_id`, reads the stored session, and returns both on success.
+E: Missing ids and unknown sessions map to stable `ok: false` errors.
+"""
+def load_recording_from_payload(payload: dict[str, Any]) -> dict[str, Any] {
+    recording_id: str = str(payload.get("recording_id", ""));
+    if not recording_id {
+        return {"ok": False, "error": "recording_id is required"};
+    }
+
+    rec: dict[str, Any] = read_recording(recording_id);
+    if not rec {
+        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
+    }
+
+    return {"ok": True, "recording_id": recording_id, "recording": rec};
+}
+
 """R: Persist one recording session JSON record.
 M: Writes formatted JSON to the session file path.
 E: Propagates filesystem errors to caller.
@@ -362,12 +380,13 @@ def new_recording_session(task_name: str, meta: dict[str, Any]) -> dict[str, Any
     if isinstance(raw_domains, list) {
         domains = raw_domains;
     }
+    now: str = timestamp_now();
 
     return {
         "recording_id": new_recording_id(),
         "task_name": task_name,
-        "created_at": timestamp_now(),
-        "updated_at": timestamp_now(),
+        "created_at": now,
+        "updated_at": now,
         "state": STATE_IDLE,
         "segments": {
             "one_time": {
@@ -408,11 +427,16 @@ def active_segment(state: str) -> str {
     return "";
 }
 
-"""R: Append one event to the correct segment based on current session state.
-M: Resolves segment via active_segment, stamps with recorded_at and segment name, appends.
-E: Returns error if session is not in an active recording state.
+"""R: Append one stamped payload item to the active recording segment.
+M: Resolves the active segment, adds timestamp and segment metadata, then appends into the target list.
+E: Returns `ok: false` when the recording is not actively capturing a segment.
 """
-def append_event_to_segment(rec: dict[str, Any], event: dict[str, Any]) -> dict[str, Any] {
+def append_to_active_segment(
+    rec: dict[str, Any],
+    item: dict[str, Any],
+    collection_key: str,
+    stamp_key: str
+) -> dict[str, Any] {
     state: str = str(rec.get("state", ""));
     seg_name: str = active_segment(state);
     if not seg_name {
@@ -425,23 +449,37 @@ def append_event_to_segment(rec: dict[str, Any], event: dict[str, Any]) -> dict[
     segments: dict[str, Any] = rec.get("segments", {});
     seg: dict[str, Any] = segments.get(seg_name, {});
 
-    events: list[Any] = [];
-    raw_events = seg.get("events", []);
-    if isinstance(raw_events, list) {
-        events = raw_events;
+    items: list[Any] = [];
+    raw_items = seg.get(collection_key, []);
+    if isinstance(raw_items, list) {
+        items = raw_items;
     }
 
-    stamped: dict[str, Any] = dict(event);
-    stamped["recorded_at"] = timestamp_now();
+    now: str = timestamp_now();
+    stamped: dict[str, Any] = dict(item);
+    stamped[stamp_key] = now;
     stamped["segment"] = seg_name;
-    events.append(stamped);
+    items.append(stamped);
 
-    seg["events"] = events;
+    seg[collection_key] = items;
     segments[seg_name] = seg;
     rec["segments"] = segments;
-    rec["updated_at"] = timestamp_now();
+    rec["updated_at"] = now;
 
-    return {"ok": True, "segment": seg_name, "event_count": len(events)};
+    return {"ok": True, "segment": seg_name, "count": len(items)};
+}
+
+"""R: Append one event to the correct segment based on current session state.
+M: Resolves segment via active_segment, stamps with recorded_at and segment name, appends.
+E: Returns error if session is not in an active recording state.
+"""
+def append_event_to_segment(rec: dict[str, Any], event: dict[str, Any]) -> dict[str, Any] {
+    result: dict[str, Any] = append_to_active_segment(rec, event, "events", "recorded_at");
+    if not result.get("ok", False) {
+        return result;
+    }
+
+    return {"ok": True, "segment": result["segment"], "event_count": result["count"]};
 }
 
 """R: Append one annotation to the correct segment based on current session state.
@@ -449,35 +487,34 @@ M: Resolves segment via active_segment, stamps with annotated_at and segment nam
 E: Returns error if session is not in an active recording state.
 """
 def append_annotation_to_segment(rec: dict[str, Any], annotation: dict[str, Any]) -> dict[str, Any] {
-    state: str = str(rec.get("state", ""));
-    seg_name: str = active_segment(state);
-    if not seg_name {
-        return {
-            "ok": False,
-            "error": "no active recording segment in state: " + state
-        };
+    result: dict[str, Any] = append_to_active_segment(rec, annotation, "annotations", "annotated_at");
+    if not result.get("ok", False) {
+        return result;
     }
 
-    segments: dict[str, Any] = rec.get("segments", {});
-    seg: dict[str, Any] = segments.get(seg_name, {});
+    return {"ok": True, "segment": result["segment"], "annotation_count": result["count"]};
+}
 
-    annotations: list[Any] = [];
-    raw_anns = seg.get("annotations", []);
-    if isinstance(raw_anns, list) {
-        annotations = raw_anns;
+"""R: Apply one state transition command to a stored recording.
+M: Loads the target recording, performs the transition, and persists the updated state.
+E: Missing recordings and invalid transitions return the original error payloads unchanged.
+"""
+def transition_recording_command(payload: dict[str, Any], to_state: str) -> dict[str, Any] {
+    loaded: dict[str, Any] = load_recording_from_payload(payload);
+    if not loaded.get("ok", False) {
+        return loaded;
     }
 
-    stamped: dict[str, Any] = dict(annotation);
-    stamped["annotated_at"] = timestamp_now();
-    stamped["segment"] = seg_name;
-    annotations.append(stamped);
+    recording_id: str = str(loaded.get("recording_id", ""));
+    rec: dict[str, Any] = loaded.get("recording", {});
 
-    seg["annotations"] = annotations;
-    segments[seg_name] = seg;
-    rec["segments"] = segments;
-    rec["updated_at"] = timestamp_now();
+    result: dict[str, Any] = apply_transition(rec, to_state);
+    if not result.get("ok", False) {
+        return result;
+    }
 
-    return {"ok": True, "segment": seg_name, "annotation_count": len(annotations)};
+    write_recording(recording_id, rec);
+    return {"ok": True, "recording_id": recording_id, "state": rec["state"]};
 }
 
 # ============================================================
@@ -513,23 +550,7 @@ M: Loads session, applies transition, persists.
 E: Fails if current state does not allow this transition.
 """
 def cmd_enter_one_time(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
-    }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
-
-    result = apply_transition(rec, STATE_RECORDING_ONE_TIME);
-    if not result.get("ok", False) {
-        return result;
-    }
-
-    write_recording(recording_id, rec);
-    return {"ok": True, "recording_id": recording_id, "state": rec["state"]};
+    return transition_recording_command(payload, STATE_RECORDING_ONE_TIME);
 }
 
 """R: Transition to recording_repeated from idle or recording_one_time.
@@ -537,23 +558,7 @@ M: Loads session, applies transition, persists.
 E: Fails if current state does not allow this transition.
 """
 def cmd_enter_repeated(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
-    }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
-
-    result = apply_transition(rec, STATE_RECORDING_REPEATED);
-    if not result.get("ok", False) {
-        return result;
-    }
-
-    write_recording(recording_id, rec);
-    return {"ok": True, "recording_id": recording_id, "state": rec["state"]};
+    return transition_recording_command(payload, STATE_RECORDING_REPEATED);
 }
 
 """R: Append one event to the active recording segment.
@@ -561,15 +566,12 @@ M: Resolves segment from current state, appends event with timestamp, persists.
 E: Fails if session is not in an active recording state.
 """
 def cmd_append_event(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
+    loaded: dict[str, Any] = load_recording_from_payload(payload);
+    if not loaded.get("ok", False) {
+        return loaded;
     }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
+    recording_id: str = str(loaded.get("recording_id", ""));
+    rec: dict[str, Any] = loaded.get("recording", {});
 
     event: dict[str, Any] = {};
     raw_event = payload.get("event", {});
@@ -596,15 +598,12 @@ M: Resolves segment from current state, appends annotation with timestamp, persi
 E: Fails if session is not in an active recording state.
 """
 def cmd_append_annotation(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
+    loaded: dict[str, Any] = load_recording_from_payload(payload);
+    if not loaded.get("ok", False) {
+        return loaded;
     }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
+    recording_id: str = str(loaded.get("recording_id", ""));
+    rec: dict[str, Any] = loaded.get("recording", {});
 
     annotation: dict[str, Any] = {};
     raw_ann = payload.get("annotation", {});
@@ -631,23 +630,7 @@ M: Transitions recording_repeated -> repeated_example_complete.
 E: Fails if not currently in recording_repeated state.
 """
 def cmd_finish_repeated_example(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
-    }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
-
-    result = apply_transition(rec, STATE_REPEATED_EXAMPLE_COMPLETE);
-    if not result.get("ok", False) {
-        return result;
-    }
-
-    write_recording(recording_id, rec);
-    return {"ok": True, "recording_id": recording_id, "state": rec["state"]};
+    return transition_recording_command(payload, STATE_REPEATED_EXAMPLE_COMPLETE);
 }
 
 """R: Move to configuring_continuation and store a validated strategy list.
@@ -657,15 +640,12 @@ E: Validation errors return ok:false without mutating stored state.
    Re-calling while already in configuring_continuation replaces the strategy in place.
 """
 def cmd_configure_continuation(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
+    loaded: dict[str, Any] = load_recording_from_payload(payload);
+    if not loaded.get("ok", False) {
+        return loaded;
     }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
+    recording_id: str = str(loaded.get("recording_id", ""));
+    rec: dict[str, Any] = loaded.get("recording", {});
 
     # Validate before mutating anything
     raw_strategy = payload.get("strategy", []);
@@ -703,15 +683,12 @@ E: Only allowed in configuring_continuation state. No state transition occurs.
    Validation errors return ok:false without mutating stored data.
 """
 def cmd_configure_stop_policy(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
+    loaded: dict[str, Any] = load_recording_from_payload(payload);
+    if not loaded.get("ok", False) {
+        return loaded;
     }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
+    recording_id: str = str(loaded.get("recording_id", ""));
+    rec: dict[str, Any] = loaded.get("recording", {});
 
     state: str = str(rec.get("state", ""));
     if state != STATE_CONFIGURING_CONTINUATION {
@@ -742,23 +719,7 @@ M: Transitions current state -> finished, persists.
 E: Fails if current state does not allow transition to finished.
 """
 def cmd_finish(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
-    }
-
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
-
-    result = apply_transition(rec, STATE_FINISHED);
-    if not result.get("ok", False) {
-        return result;
-    }
-
-    write_recording(recording_id, rec);
-    return {"ok": True, "recording_id": recording_id, "state": rec["state"]};
+    return transition_recording_command(payload, STATE_FINISHED);
 }
 
 """R: Fetch a stored recording session by recording_id.
@@ -766,17 +727,12 @@ M: Loads recording JSON and returns the parsed dict.
 E: Missing sessions return explicit errors.
 """
 def cmd_get(payload: dict[str, Any]) -> dict[str, Any] {
-    recording_id: str = str(payload.get("recording_id", ""));
-    if not recording_id {
-        return {"ok": False, "error": "recording_id is required"};
+    loaded: dict[str, Any] = load_recording_from_payload(payload);
+    if not loaded.get("ok", False) {
+        return loaded;
     }
 
-    rec = read_recording(recording_id);
-    if not rec {
-        return {"ok": False, "error": "recording not found", "recording_id": recording_id};
-    }
-
-    return {"ok": True, "recording": rec};
+    return {"ok": True, "recording": loaded["recording"]};
 }
 
 # ============================================================
@@ -831,13 +787,27 @@ def dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any] {
     };
 }
 
+"""R: Decide whether this module should execute its CLI entrypoint.
+M: Treats non-empty, non-path-like argv values as commands and ignores import-time script paths.
+E: Unknown direct commands still dispatch so the caller gets the usual usage payload.
+"""
+def should_dispatch_cli(command: str) -> bool {
+    if not command {
+        return False;
+    }
+
+    return ("/" not in command) and ("\\" not in command) and not command.endswith(".jac");
+}
+
 with entry {
     command: str = "";
     if len(sys.argv) > 1 {
         command = str(sys.argv[1]);
     }
 
-    payload = parse_payload();
-    result = dispatch(command, payload);
-    print(json.dumps(result));
+    if should_dispatch_cli(command) {
+        payload = parse_payload();
+        result = dispatch(command, payload);
+        print(json.dumps(result));
+    }
 }

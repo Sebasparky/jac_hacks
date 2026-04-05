@@ -234,7 +234,7 @@ cl {
                                     <div className="layer-state-label" style={{"fontSize": "11px"}}>Run task</div>
                                     <div style={{"color": "#1d2a3e", "fontSize": "16px", "fontWeight": "800"}}>Saved tasks and helpers</div>
                                     <div style={{"color": "#526885", "fontSize": "12px", "lineHeight": "1.6"}}>
-                                        Pick a saved task, add optional run-only guidance, and launch a local demo run without changing the saved helper.
+                                        Pick a saved task, add optional run-only guidance, and launch it without changing the saved helper.
                                     </div>
                                 </div>
 
@@ -351,7 +351,7 @@ cl {
                                     <div className="layer-state-label">Create Helper</div>
                                     <div style={{"color": "#1d2a3e", "fontSize": "18px", "fontWeight": "800"}}>Saved Task Builder</div>
                                     <div style={{"color": "#526885", "fontSize": "12px", "lineHeight": "1.6"}}>
-                                        Add a reusable helper here, then launch it later from TASKS. The browser shell keeps this local spec in renderer memory for the current demo session.
+                                        Add a reusable helper here, then launch it later from TASKS. Saved helpers sync with the backend for this demo.
                                     </div>
                                 </div>
                                 <div style={{"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(220px, 1fr))", "gap": "12px"}}>
@@ -463,7 +463,7 @@ cl {
                                             "minHeight": "0"
                                         }}
                                     >
-                                        No helpers yet. Create one to populate this local workspace.
+                                        No helpers yet. Create one to populate this workspace.
                                     </div>
                                 </section>
 
@@ -499,7 +499,7 @@ cl {
                                                 "gap": "12px"
                                             }}
                                         >
-                                            Select a helper to inspect its local instructions and run state.
+                                            Select a helper to inspect its instructions, schedule, and latest run state.
                                         </div>
                                     </section>
 
@@ -527,7 +527,7 @@ cl {
                                                 "gap": "10px"
                                             }}
                                         >
-                                            Run a helper to capture a local demo result history here.
+                                            Run a helper to capture its latest results here.
                                         </div>
                                     </section>
                                 </div>

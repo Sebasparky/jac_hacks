@@ -3,6 +3,7 @@ import sys;
 import json;
 import time;
 import from typing { Any }
+import from jac.layers.trace_utils { trace_file, read_trace }
 
 glob DATA_ROOT: str = "./jac/layer_data";
 glob TRACE_DIR: str = DATA_ROOT + "/traces";
@@ -177,40 +178,6 @@ def parse_payload() -> dict[str, Any] {
     } except json.JSONDecodeError {
         return {};
     }
-}
-
-"""R: Build trace file path for one observation session.
-M: Joins trace dir with `<session_id>.json`.
-E: Caller validates session id shape.
-"""
-def trace_file(session_id: str) -> str {
-    return TRACE_DIR + "/" + session_id + ".json";
-}
-
-"""R: Read one persisted observation trace from disk.
-M: Loads JSON and returns dict payload when valid.
-E: Missing/invalid files map to empty dict.
-"""
-def read_trace(session_id: str) -> dict[str, Any] {
-    path = trace_file(session_id);
-    if not os.path.exists(path) {
-        return {};
-    }
-
-    try {
-        with open(path, "r") as file {
-            parsed = json.load(file);
-            if isinstance(parsed, dict) {
-                return parsed;
-            }
-        }
-    } except json.JSONDecodeError {
-        return {};
-    } except OSError {
-        return {};
-    }
-
-    return {};
 }
 
 """R: Persist one observation trace JSON record.

@@ -284,6 +284,27 @@ cl {
             state["layerLog"].textContent = nextText.slice(0, 7000);
         }
 
+        """R: Surface helper refresh progress and failures in renderer-visible places without requiring a full UI sync.
+        M: Writes to the layer log first, optionally mirrors to the Claw transcript, and updates the status text node directly when present.
+        E: Missing status or transcript DOM is ignored so refresh diagnostics still show up in whichever panel is available.
+        """;
+        def reportHelpersRefresh(message: any, role: any = "system", includeTranscript: bool = False) -> None {
+            final_message = trimmedText(message);
+            if not final_message {
+                return;
+            }
+
+            appendLayerLog(final_message);
+            if includeTranscript {
+                appendClawTranscript(role, final_message);
+            }
+
+            state["clawStatusText"] = final_message;
+            if state["clawStatus"] {
+                state["clawStatus"].textContent = final_message;
+            }
+        }
+
         def trimmedText(rawValue: any) -> str {
             return str(rawValue or "").trim();
         }
@@ -426,6 +447,257 @@ cl {
             state["helperDraftFrequency"] = "once";
         }
 
+        def backendHelperCardLabel(helper: any) -> str {
+            return "backend" if trimmedText(objectValue(helper, "source", "")) == "backend" else "local demo";
+        }
+
+        """R: Normalize one backend helper run into the compact renderer result shape already used by the Helpers UI.
+        M: Maps stable backend fields into the existing timestamp/status/summary card fields and pulls a few short notes from runtime metadata.
+        E: Empty or malformed runs return `None` so callers can skip partial backend payloads safely.
+        """;
+        def helperResultFromBackendRun(runRecord: any) -> any {
+            if not runRecord or typeof(runRecord) != "object" {
+                return None;
+            }
+
+            run_id = trimmedText(objectValue(runRecord, "run_id", ""));
+            helper_id = trimmedText(objectValue(runRecord, "helper_id", ""));
+            if not run_id or not helper_id {
+                return None;
+            }
+
+            runtime_state = objectValue(runRecord, "runtime_state", {}) or {};
+            structured_output = objectValue(runRecord, "structured_output", {}) or {};
+            state_source = trimmedText(objectValue(runtime_state, "state_source", ""));
+            if not state_source {
+                state_source = trimmedText(objectValue(structured_output, "state_source", ""));
+            }
+
+            notes = [];
+            trigger_type = trimmedText(objectValue(runRecord, "trigger_type", ""));
+            if trigger_type {
+                notes.push("Trigger: " + trigger_type);
+            }
+            if state_source {
+                notes.push("State source: " + state_source);
+            }
+
+            browser_session_id = trimmedText(objectValue(runRecord, "browser_session_id", ""));
+            if browser_session_id {
+                notes.push("Browser session: " + browser_session_id);
+            }
+
+            raw_errors = objectValue(runRecord, "errors", []) or [];
+            error_items = [];
+            if Array.isArray(raw_errors) {
+                error_items = raw_errors;
+            } elif trimmedText(raw_errors) {
+                error_items = [raw_errors];
+            }
+
+            for error_text in error_items.slice(0, 2) {
+                notes.push("Error: " + str(error_text or ""));
+            }
+
+            mode_label = trimmedText(objectValue(structured_output, "runtime_mode", ""));
+            if not mode_label {
+                mode_label = "backend";
+            }
+
+            return {
+                "id": run_id,
+                "helperId": helper_id,
+                "timestamp": trimmedText(objectValue(runRecord, "finished_at", "")) or trimmedText(objectValue(runRecord, "started_at", "")),
+                "mode": mode_label,
+                "status": trimmedText(objectValue(runRecord, "status", "")) or "unknown",
+                "summary": trimmedText(objectValue(runRecord, "summary", "")) or "No summary returned.",
+                "notes": notes,
+                "source": "backend"
+            };
+        }
+
+        """R: Normalize one backend helper bundle into the renderer helper shape used across list, detail, and run panels.
+        M: Reads the bundled helper/spec/latest-run payload and preserves the current UI field names so the render path stays local and small.
+        E: Missing helper ids or required nested objects return `None` so refresh can skip incomplete backend records.
+        """;
+        def helperFromBackendBundle(bundle: any) -> any {
+            if not bundle or typeof(bundle) != "object" {
+                return None;
+            }
+
+            helper_record = objectValue(bundle, "helper", {}) or {};
+            agent_spec = objectValue(bundle, "agent_spec", {}) or {};
+            helper_id = trimmedText(objectValue(helper_record, "helper_id", ""));
+            if not helper_id {
+                return None;
+            }
+
+            latest_run = helperResultFromBackendRun(objectValue(bundle, "latest_run", {}) or {});
+            return {
+                "id": helper_id,
+                "name": trimmedText(objectValue(helper_record, "name", "")) or "Untitled helper",
+                "goal": trimmedText(objectValue(helper_record, "goal", "")),
+                "frequency": normalizedHelperFrequency(objectValue(helper_record, "frequency", "once")),
+                "frequencyLabel": helperFrequencyLabel(objectValue(helper_record, "frequency", "once")),
+                "kind": trimmedText(objectValue(agent_spec, "kind", "")) or "general",
+                "runtimeVersion": trimmedText(objectValue(helper_record, "runtime_version", objectValue(agent_spec, "runtime_version", "v1"))) or "v1",
+                "status": trimmedText(objectValue(helper_record, "status", "")) or "active",
+                "readOnly": objectValue(agent_spec, "read_only", True) != False,
+                "createdAt": trimmedText(objectValue(helper_record, "created_at", "")),
+                "updatedAt": trimmedText(objectValue(helper_record, "updated_at", "")),
+                "spec": agent_spec,
+                "latestRun": latest_run or {},
+                "source": "backend"
+            };
+        }
+
+        async def refreshHelpersFromBackend(preferredHelperId: any = "") -> bool {
+            api = browserAPI();
+            if not api or not api.helpersList {
+                reportHelpersRefresh("helpers refresh: api.helpersList unavailable", "error", True);
+                return False;
+            }
+
+            try {
+                result = await api.helpersList({});
+                if not result or objectValue(result, "ok", True) == False {
+                    reportHelpersRefresh(
+                        "helpers refresh failed at api.helpersList: " + str(objectValue(result, "error", "unknown error")),
+                        "error",
+                        True
+                    );
+                    return False;
+                }
+
+                refreshed_helpers = [];
+                backend_helpers = objectValue(result, "helpers", []) or [];
+                if not Array.isArray(backend_helpers) {
+                    reportHelpersRefresh(
+                        "helpers refresh failed at api.helpersList: api.helpersList returned non-array helpers payload",
+                        "error",
+                        True
+                    );
+                    return False;
+                }
+
+                reportHelpersRefresh("helpers refresh: fetched " + str(len(backend_helpers)) + " bundles");
+                bundle_index = 0;
+                for bundle in backend_helpers {
+                    bundle_index = bundle_index + 1;
+                    bundle_helper = objectValue(bundle, "helper", {}) or {};
+                    bundle_helper_id = trimmedText(objectValue(bundle_helper, "helper_id", ""));
+                    helper_label = bundle_helper_id or ("bundle #" + str(bundle_index));
+
+                    try {
+                        mapped_helper = helperFromBackendBundle(bundle);
+                        if mapped_helper {
+                            refreshed_helpers.push(mapped_helper);
+                            reportHelpersRefresh("helpers refresh: mapped helper " + str(objectValue(mapped_helper, "id", helper_label)));
+                        } else {
+                            reportHelpersRefresh("helpers refresh: skipped empty helper bundle " + helper_label);
+                        }
+                    } except Exception as err {
+                        reportHelpersRefresh(
+                            "helpers refresh failed at helperFromBackendBundle for " + helper_label + ": " + str(err.message or err),
+                            "error",
+                            True
+                        );
+                    }
+                }
+                state["helpers"] = refreshed_helpers;
+
+                preferred_helper_id = trimmedText(preferredHelperId) or trimmedText(state["selectedHelperId"]);
+                preferred_run_helper_id = trimmedText(state["selectedTaskRunHelperId"]);
+                if preferred_helper_id and findHelperById(preferred_helper_id) {
+                    state["selectedHelperId"] = preferred_helper_id;
+                }
+                if preferred_run_helper_id and findHelperById(preferred_run_helper_id) {
+                    state["selectedTaskRunHelperId"] = preferred_run_helper_id;
+                }
+
+                try {
+                    ensureSelectedHelper();
+                    reportHelpersRefresh("helpers refresh: ensureSelectedHelper ok");
+                } except Exception as err {
+                    reportHelpersRefresh(
+                        "helpers refresh failed at ensureSelectedHelper: " + str(err.message or err),
+                        "error",
+                        True
+                    );
+                    return False;
+                }
+
+                ensureSelectedTaskRunHelper();
+                selected = selectedHelper();
+                state["helperEditGoalDraft"] = trimmedText(objectValue(selected, "goal", "")) if selected else "";
+
+                try {
+                    syncClawUi();
+                    reportHelpersRefresh("helpers refresh: syncClawUi ok");
+                } except Exception as err {
+                    reportHelpersRefresh(
+                        "helpers refresh failed at syncClawUi: " + str(err.message or err),
+                        "error",
+                        True
+                    );
+                    return False;
+                }
+                return True;
+            } except Exception as err {
+                reportHelpersRefresh("helpers refresh threw: " + str(err.message or err), "error", True);
+                return False;
+            }
+        }
+
+        async def refreshHelperRunsFromBackend(helperId: any) -> bool {
+            wanted = trimmedText(helperId);
+            if not wanted {
+                return False;
+            }
+
+            api = browserAPI();
+            if not api or not api.helperRunsList {
+                return False;
+            }
+
+            try {
+                result = await api.helperRunsList({"helper_id": wanted, "limit": 12});
+                if not result or objectValue(result, "ok", True) == False {
+                    return False;
+                }
+
+                preserved_results = [];
+                for helper_result in state["helperResults"] {
+                    if trimmedText(objectValue(helper_result, "helperId", "")) != wanted {
+                        preserved_results.push(helper_result);
+                    }
+                }
+
+                mapped_runs = [];
+                for run_record in (objectValue(result, "runs", []) or []) {
+                    mapped_run = helperResultFromBackendRun(run_record);
+                    if mapped_run {
+                        mapped_runs.push(mapped_run);
+                    }
+                }
+
+                for mapped_run in mapped_runs {
+                    preserved_results.push(mapped_run);
+                }
+                state["helperResults"] = preserved_results;
+
+                selected_helper = findHelperById(wanted);
+                if selected_helper {
+                    selected_helper["latestRun"] = mapped_runs[0] if len(mapped_runs) > 0 else {};
+                }
+
+                syncClawUi();
+                return True;
+            } except Exception {
+                return False;
+            }
+        }
+
         """R: Keep the TASKS launcher in sync with the lower shell layout.
         M: Mirrors the open state into the toolbar toggle, hides the launcher when closed, and collapses the lower grid to a single content column.
         E: Missing DOM nodes are ignored so the browser and Helpers views still work even if the launcher is absent.
@@ -502,6 +774,7 @@ cl {
             if state["helpersPage"] {
                 state["helpersPage"].style.display = "flex" if active_view == "helpers" else "none";
             }
+            renderActiveTabState(state["activeTabId"]);
         }
 
         def setShellView(nextView: any) -> None {
@@ -531,9 +804,9 @@ cl {
             if state["helperFrequencySelect"] and state["helperFrequencySelect"].value != state["helperDraftFrequency"] {
                 state["helperFrequencySelect"].value = state["helperDraftFrequency"];
             }
-            if state["helperCreateBtn"] {
+        if state["helperCreateBtn"] {
                 state["helperCreateBtn"].disabled = not helperFormReady();
-                state["helperCreateBtn"].title = "Add a name and helper goal first." if not helperFormReady() else "Create this helper in renderer-local state.";
+                state["helperCreateBtn"].title = "Add a name and helper goal first." if not helperFormReady() else "Create this helper.";
             }
             if state["helperCancelBtn"] {
                 state["helperCancelBtn"].textContent = "Close" if state["helperBuilderOpen"] else "Cancel";
@@ -750,10 +1023,13 @@ cl {
         }
 
         def openHelperBuilder() -> None {
-            setShellView("helpers");
+            state["activeShellView"] = "helpers";
             state["activeTaskPanelTab"] = "create";
             state["helperBuilderOpen"] = True;
             syncClawUi();
+            if state["helperBuilderPanel"] {
+                state["helperBuilderPanel"].scrollIntoView({"behavior": "smooth", "block": "nearest"});
+            }
             if state["helperNameInput"] {
                 setTimeout(lambda { state["helperNameInput"].focus(); }, 10);
             }
@@ -765,6 +1041,32 @@ cl {
                 resetHelperDraft();
             }
             syncClawUi();
+        }
+
+        def currentBrowserStateHint() -> any {
+            webview = getActiveWebview();
+            active_tab = getActiveTab();
+            current_url = "";
+            current_title = "";
+
+            if webview {
+                current_url = trimmedText(webview.getURL() or "");
+                current_title = trimmedText(webview.getTitle() or "");
+            }
+            if not current_url and active_tab {
+                current_url = trimmedText(objectValue(active_tab, "url", ""));
+            }
+            if not current_title and active_tab {
+                current_title = trimmedText(objectValue(active_tab, "title", ""));
+            }
+            if not current_url and state["addressInput"] {
+                current_url = trimmedText(state["addressInput"].value or "");
+            }
+
+            return {
+                "current_url": current_url,
+                "title": current_title
+            };
         }
 
         def findHelperById(helperId: any) -> any {
@@ -981,7 +1283,10 @@ cl {
                     run_btn.style.minWidth = "92px";
                     run_btn.addEventListener("click", lambda event {
                         event.stopPropagation();
-                        handleHelperRunNow(helper_id);
+                        async def handle {
+                            await handleHelperRunNow(helper_id);
+                        }
+                        handle();
                     });
 
                     top_row.appendChild(title_wrap);
@@ -996,7 +1301,8 @@ cl {
                     meta.style.fontWeight = "700";
                     meta.textContent = (
                         "Frequency: " + helperFrequencyLabel(objectValue(helper, "frequency", "once")) +
-                        " | Type: " + str(objectValue(helper, "kind", "general"))
+                        " | Type: " + str(objectValue(helper, "kind", "general")) +
+                        " | " + backendHelperCardLabel(helper)
                     );
 
                     card.appendChild(top_row);
@@ -1036,7 +1342,7 @@ cl {
                 subtitle.style.color = "#526885";
                 subtitle.style.fontSize = "13px";
                 subtitle.style.lineHeight = "1.55";
-                subtitle.textContent = "Local demo helper stored in renderer memory only.";
+                subtitle.textContent = "Persisted helper backed by the Jac runtime.";
 
                 title_wrap.appendChild(title);
                 title_wrap.appendChild(subtitle);
@@ -1052,7 +1358,10 @@ cl {
                 run_btn.type = "button";
                 run_btn.textContent = "Run Task";
                 run_btn.addEventListener("click", lambda {
-                    handleHelperRunNow(objectValue(selected, "id", ""));
+                    async def handle {
+                        await handleHelperRunNow(objectValue(selected, "id", ""));
+                    }
+                    handle();
                 });
                 actions.appendChild(run_btn);
 
@@ -1104,6 +1413,44 @@ cl {
                     " | Created: " + str(objectValue(selected, "createdAt", "local session"))
                 );
                 state["helpersPageDetail"].appendChild(meta);
+
+                latest_result = None;
+                selected_results = helperResultsFor(objectValue(selected, "id", ""));
+                if len(selected_results) > 0 {
+                    latest_result = selected_results[0];
+                } else {
+                    latest_result = objectValue(selected, "latestRun", {}) or {};
+                }
+                if latest_result and trimmedText(objectValue(latest_result, "status", "")) {
+                    latest_card = document.createElement("div");
+                    latest_card.style.display = "flex";
+                    latest_card.style.flexDirection = "column";
+                    latest_card.style.gap = "6px";
+                    latest_card.style.marginTop = "4px";
+                    latest_card.style.padding = "14px 16px";
+                    latest_card.style.borderRadius = "18px";
+                    latest_card.style.border = "1px solid rgba(53, 92, 163, 0.16)";
+                    latest_card.style.background = "rgba(235, 242, 255, 0.76)";
+
+                    latest_title = document.createElement("div");
+                    latest_title.style.color = "#355ca3";
+                    latest_title.style.fontSize = "11px";
+                    latest_title.style.fontWeight = "800";
+                    latest_title.style.letterSpacing = "0.08em";
+                    latest_title.style.textTransform = "uppercase";
+                    latest_title.textContent = "Latest run | " + str(objectValue(latest_result, "status", "unknown"));
+
+                    latest_summary = document.createElement("div");
+                    latest_summary.style.color = "#183154";
+                    latest_summary.style.fontSize = "13px";
+                    latest_summary.style.fontWeight = "700";
+                    latest_summary.style.lineHeight = "1.6";
+                    latest_summary.textContent = trimmedText(objectValue(latest_result, "summary", "")) or "No summary returned.";
+
+                    latest_card.appendChild(latest_title);
+                    latest_card.appendChild(latest_summary);
+                    state["helpersPageDetail"].appendChild(latest_card);
+                }
 
                 label = document.createElement("div");
                 label.style.color = "#6b7b95";
@@ -1173,7 +1520,7 @@ cl {
                 empty_results.style.color = "#526885";
                 empty_results.style.fontSize = "13px";
                 empty_results.style.lineHeight = "1.6";
-                empty_results.textContent = "No local results yet. Run this helper from TASKS or use Run Task here to capture a renderer-only demo result.";
+                empty_results.textContent = "No runs yet. Run this helper from TASKS or use Run Task here to refresh the latest status.";
                 state["helpersPageResults"].appendChild(empty_results);
                 return;
             }
@@ -2134,11 +2481,11 @@ cl {
             }
         }
 
-        """R: Create a lightweight local helper without exposing internal spec details in the UI.
-        M: Validates the simple builder fields, infers a helper type, stores a renderer-local read-only helper record, and posts a confirmation to Claw.
-        E: Missing name or goal keeps the builder open and reports an honest prompt instead of creating a partial helper.
+        """R: Create one helper through the existing backend contract, then refresh and focus the new record in the renderer workspace.
+        M: Validates the builder draft, calls the helper create IPC, closes the builder on success, and reloads helper state from the backend.
+        E: Missing fields, bridge gaps, and backend errors keep the current draft intact and surface an honest status instead of partial UI state.
         """;
-        def handleHelperCreate() -> None {
+        async def handleHelperCreate() -> None {
             helper_name = trimmedText(state["helperDraftName"]);
             helper_goal = trimmedText(state["helperDraftGoal"]);
             helper_frequency = normalizedHelperFrequency(state["helperDraftFrequency"]);
@@ -2149,19 +2496,58 @@ cl {
                 return;
             }
 
+            api = browserAPI();
+            if not api or not api.helpersCreate {
+                appendClawTranscript("error", "Create helper failed because the browser bridge is offline.");
+                setClawStatus("Create helper failed because the browser bridge is offline.");
+                return;
+            }
+
             helper_spec = buildHelperSpec(helper_name, helper_goal, helper_frequency);
-            saveHelperRecord(
-                helper_name,
-                helper_goal,
-                helper_frequency,
-                helper_spec,
-                "Helper created: " + helper_name + "\n" +
-                "Type: " + str(objectValue(helper_spec, "type", "general")) + "\n" +
-                "How often: " + helperFrequencyLabel(helper_frequency) + "\n" +
-                "Stored locally in this renderer session as a demo helper.",
-                "Helper ready: " + helper_name + " (" + helperFrequencyLabel(helper_frequency) + ")"
-            );
-            closeHelperBuilder(True);
+            setClawStatus("Creating helper " + helper_name + "...");
+            try {
+                create_result = await api.helpersCreate({
+                    "name": helper_name,
+                    "goal": helper_goal,
+                    "frequency": helper_frequency
+                });
+                if not create_result or objectValue(create_result, "ok", True) == False {
+                    error_text = str(objectValue(create_result, "error", "unknown error"));
+                    appendClawTranscript("error", "Create helper failed: " + error_text);
+                    setClawStatus("Create helper failed: " + error_text);
+                    return;
+                }
+
+                created_helper_id = trimmedText(objectValue(create_result, "helper_id", ""));
+                if not created_helper_id {
+                    created_bundle = objectValue(create_result, "helper_bundle", {}) or {};
+                    created_helper_id = trimmedText(objectValue(objectValue(created_bundle, "helper", {}) or {}, "helper_id", ""));
+                }
+
+                closeHelperBuilder(True);
+                refreshed = await refreshHelpersFromBackend(created_helper_id);
+                if created_helper_id and findHelperById(created_helper_id) {
+                    selectHelper(created_helper_id);
+                } else {
+                    ensureSelectedHelper();
+                    syncClawUi();
+                }
+
+                appendClawTranscript(
+                    "system",
+                    "Helper created: " + helper_name + "\n" +
+                    "Type: " + str(objectValue(helper_spec, "type", "general")) + "\n" +
+                    "How often: " + helperFrequencyLabel(helper_frequency)
+                );
+                if refreshed {
+                    setClawStatus("Helper ready: " + helper_name + " (" + helperFrequencyLabel(helper_frequency) + ")");
+                } else {
+                    setClawStatus("Helper created, but helper refresh failed.");
+                }
+            } except Exception as err {
+                appendClawTranscript("error", "Create helper threw: " + str(err.message or err));
+                setClawStatus("Create helper threw: " + str(err.message or err));
+            }
         }
 
         def clearTaskRunOverride() -> None {
@@ -2169,27 +2555,27 @@ cl {
             syncClawUi();
         }
 
-        """R: Launch the TASKS run flow without mutating the saved helper definition.
-        M: Reads the run-tab selection and temporary guidance, records a local demo run, and clears the one-run note afterwards.
-        E: Missing selections surface an honest status message instead of recording a fake run.
+        """R: Launch the TASKS run flow and refresh the selected helper history after the backend acknowledges the run.
+        M: Reads the run-tab selection and one-run guidance, forwards them to the shared helper-run path, and then clears the temporary override.
+        E: Missing selections surface an honest status message instead of attempting a stale helper run.
         """;
-        def handleTaskPanelRun() -> None {
+        async def handleTaskPanelRun() -> None {
             helper = selectedTaskRunHelper();
             if not helper {
                 setClawStatus("Select a saved task before running it.");
                 return;
             }
 
-            handleHelperRunNow(objectValue(helper, "id", ""), state["taskRunOverrideText"], "tasks_panel");
+            await handleHelperRunNow(objectValue(helper, "id", ""), state["taskRunOverrideText"], "tasks_panel");
             state["taskRunOverrideText"] = "";
             syncClawUi();
         }
 
-        """R: Let saved helpers acknowledge a local run request without pretending backend execution exists.
-        M: Finds the helper, records a renderer-local run result, and optionally includes one-run guidance without changing saved instructions.
-        E: Unknown helper ids are ignored so stale DOM actions cannot break the renderer, and blank overrides are treated as absent.
+        """R: Run one helper through the backend contract.
+        M: Sends backend helpers through `helpers:run-once` and refreshes helper and run state after completion.
+        E: Unknown ids, bridge gaps, and backend errors fail clearly without mutating the saved helper definition.
         """;
-        def handleHelperRunNow(helperId: any, runOverride: any = "", runSource: any = "helpers") -> None {
+        async def handleHelperRunNow(helperId: any, runOverride: any = "", runSource: any = "helpers") -> None {
             helper = findHelperById(helperId);
             if not helper {
                 return;
@@ -2197,32 +2583,66 @@ cl {
 
             helper_name = trimmedText(objectValue(helper, "name", "Helper"));
             override_text = trimmedText(runOverride);
-            notes = [
-                "Goal snapshot: " + helperGoalPreview(objectValue(helper, "goal", ""), 132),
-                "Execution and scheduling are not wired yet; this result stays in renderer memory only."
-            ];
-            if override_text {
-                notes.push("Run-only guidance: " + helperGoalPreview(override_text, 132));
-            }
             state["selectedHelperId"] = str(objectValue(helper, "id", ""));
             state["selectedTaskRunHelperId"] = str(objectValue(helper, "id", ""));
-            recordHelperResult(
-                objectValue(helper, "id", ""),
-                "renderer_local_demo",
-                "recorded",
-                "Captured a local demo run request for " + helper_name + (" with one-run guidance." if override_text else "."),
-                notes
-            );
-            appendClawTranscript(
-                "system",
-                "Local run requested for " + helper_name + ".\n" +
-                ("Temporary run guidance applied for this one launch only.\n" if override_text else "") +
-                "This demo stores the helper spec in renderer memory only, so execution and scheduling are not wired yet."
-            );
-            setClawStatus(
-                "Saved task run noted for " + helper_name +
-                (" with one-run guidance." if override_text and str(runSource or "") == "tasks_panel" else ".")
-            );
+
+            if trimmedText(objectValue(helper, "source", "")) != "backend" {
+                appendClawTranscript(
+                    "error",
+                    "Run blocked for " + helper_name + ".\n" +
+                    "This helper is not linked to the backend."
+                );
+                setClawStatus(
+                    "Run blocked for " + helper_name + ". This helper is not linked to the backend."
+                );
+                return;
+            }
+
+            api = browserAPI();
+            if not api or not api.helpersRunOnce {
+                appendClawTranscript("error", "Run helper failed because the browser bridge is offline.");
+                setClawStatus("Run helper failed because the browser bridge is offline.");
+                return;
+            }
+
+            setClawStatus("Running helper " + helper_name + "...");
+            try {
+                run_result = await api.helpersRunOnce({
+                    "helper_id": objectValue(helper, "id", ""),
+                    "browser_session_id": trimmedText(state["activeSessionId"]),
+                    "run_goal_override": override_text,
+                    "browser_state_hint": currentBrowserStateHint()
+                });
+                if not run_result or objectValue(run_result, "ok", True) == False {
+                    error_text = str(objectValue(run_result, "error", "unknown error"));
+                    appendClawTranscript("error", "Run helper failed: " + error_text);
+                    setClawStatus("Run helper failed: " + error_text);
+                    return;
+                }
+
+                await refreshHelpersFromBackend(objectValue(helper, "id", ""));
+                await refreshHelperRunsFromBackend(objectValue(helper, "id", ""));
+                if findHelperById(objectValue(helper, "id", "")) {
+                    selectHelper(objectValue(helper, "id", ""));
+                }
+
+                run_record = objectValue(run_result, "run", {}) or {};
+                run_status = trimmedText(objectValue(run_record, "status", "")) or "unknown";
+                run_summary = trimmedText(objectValue(run_record, "summary", "")) or "No summary returned.";
+                appendClawTranscript(
+                    "system",
+                    "Helper run finished for " + helper_name + ".\n" +
+                    "Status: " + run_status + "\n" +
+                    "Summary: " + run_summary
+                );
+                setClawStatus(
+                    "Latest run: " + run_status +
+                    (" | " + helperGoalPreview(run_summary, 140) if run_summary else "")
+                );
+            } except Exception as err {
+                appendClawTranscript("error", "Run helper threw: " + str(err.message or err));
+                setClawStatus("Run helper threw: " + str(err.message or err));
+            }
         }
 
         def setTabTitle(tab: any, titleText: any) -> None {
@@ -2312,17 +2732,25 @@ cl {
         }
 
         def renderActiveTabState(activeId: any) -> None {
-            if state["renderedActiveTabId"] == activeId {
+            active_view = "helpers" if state["activeShellView"] == "helpers" else "browser";
+            rendered_browser = active_view == "browser";
+            rendered_key = activeId if rendered_browser else "__helpers_hidden__";
+            if state["renderedActiveTabId"] == rendered_key {
                 return;
             }
 
             previousTab = None;
-            if state["renderedActiveTabId"] {
-                previousTab = getTabById(state["renderedActiveTabId"]);
+            previous_rendered_id = state["renderedActiveTabId"];
+            if previous_rendered_id and previous_rendered_id != "__helpers_hidden__" {
+                previousTab = getTabById(previous_rendered_id);
             }
+
             if previousTab {
                 previousTab["tabNode"].classList.remove("active");
-                previousTab["webview"].classList.remove("active");
+            }
+
+            for tab in state["tabs"] {
+                tab["webview"].classList.remove("active");
             }
 
             nextTab = None;
@@ -2331,10 +2759,12 @@ cl {
             }
             if nextTab {
                 nextTab["tabNode"].classList.add("active");
-                nextTab["webview"].classList.add("active");
+                if rendered_browser {
+                    nextTab["webview"].classList.add("active");
+                }
             }
 
-            state["renderedActiveTabId"] = activeId;
+            state["renderedActiveTabId"] = rendered_key;
         }
 
         def activateTab(tabId: any, emitObservation: any = True) -> None {
@@ -2924,7 +3354,10 @@ cl {
 
         if state["helperCreateBtn"] {
             state["helperCreateBtn"].addEventListener("click", lambda {
-                handleHelperCreate();
+                async def handle {
+                    await handleHelperCreate();
+                }
+                handle();
             });
         }
 
@@ -2980,7 +3413,10 @@ cl {
 
         if state["taskPanelRunBtn"] {
             state["taskPanelRunBtn"].addEventListener("click", lambda {
-                handleTaskPanelRun();
+                async def handle {
+                    await handleTaskPanelRun();
+                }
+                handle();
             });
         }
 
@@ -2995,6 +3431,7 @@ cl {
             syncLayerFlowUi();
             appendClawTranscript("system", "Claw is ready. Type the task below. Plan now uses the active live trace. Save draft keeps the text in this browser shell only.");
             syncClawUi();
+            await refreshHelpersFromBackend();
             await syncLlmRuntimeStatus();
             state["webviewPreloadUrl"] = await safeGetWebviewPreloadUrl();
             if not state["webviewPreloadUrl"] {

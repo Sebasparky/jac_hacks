@@ -21,7 +21,13 @@ cl {
             "layersStop": lambda payload: any { return ipcRenderer.invoke("layers:stop", payload); },
             "layersGetTrace": lambda payload: any { return ipcRenderer.invoke("layers:get-trace", payload); },
             "layersCompile": lambda payload: any { return ipcRenderer.invoke("layers:compile", payload); },
-            "layersPlan": lambda payload: any { return ipcRenderer.invoke("layers:plan", payload); }
+            "layersPlan": lambda payload: any { return ipcRenderer.invoke("layers:plan", payload); },
+            "helpersCreate": lambda payload: any { return ipcRenderer.invoke("helpers:create", payload); },
+            "helpersList": lambda payload: any { return ipcRenderer.invoke("helpers:list", payload); },
+            "helpersGet": lambda payload: any { return ipcRenderer.invoke("helpers:get", payload); },
+            "helpersRunOnce": lambda payload: any { return ipcRenderer.invoke("helpers:run-once", payload); },
+            "helperRunsList": lambda payload: any { return ipcRenderer.invoke("helpers:list-runs", payload); },
+            "helperRunGet": lambda payload: any { return ipcRenderer.invoke("helpers:get-run", payload); }
         });
     }
 }

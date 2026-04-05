@@ -11,6 +11,7 @@ const WEBVIEW_PRELOAD_URL = pathToFileURL(path.join(__dirname, "webview_preload.
 const OBSERVATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "observation.jac");
 const COMPILATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "compilation.jac");
 const EXECUTION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "execution.jac");
+const HELPERS_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "helpers.jac");
 const LLM_RUNTIME_SCRIPT_PATH = path.join(__dirname, "jac", "llm", "runtime.jac");
 const CLIENT_INDEX_PATH = path.join(__dirname, ".jac", "client", "dist", "index.html");
 const APP_ICON_PATH = path.join(
@@ -187,10 +188,11 @@ function normalizeUrlWithJac(rawInput = "") {
  * M: Runs `jac run <script> <command> <payload_json>` through execFile.
  * E: Converts runtime and parse failures into rejected errors.
  */
-function runJacLayerCommand(scriptPath, command, payload = {}) {
+function runJacLayerCommand(scriptPath, command, payload = {}, options = {}) {
   return new Promise((resolve, reject) => {
     const args = ["run", scriptPath, command, JSON.stringify(payload || {})];
-    execFile("jac", args, { timeout: 6000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const timeout = Number(options.timeoutMs || 6000);
+    execFile("jac", args, { timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         reject(
           new Error(
@@ -456,6 +458,54 @@ ipcMain.handle("layers:compile", async (_event, payload) => {
 ipcMain.handle("layers:plan", async (_event, payload) => {
   try {
     return await runJacLayerCommand(EXECUTION_SCRIPT_PATH, "plan", payload);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("helpers:create", async (_event, payload) => {
+  try {
+    return await runJacLayerCommand(HELPERS_SCRIPT_PATH, "create_helper", payload);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("helpers:list", async (_event, payload) => {
+  try {
+    return await runJacLayerCommand(HELPERS_SCRIPT_PATH, "list_helpers", payload, { timeoutMs: 15000 });
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("helpers:get", async (_event, payload) => {
+  try {
+    return await runJacLayerCommand(HELPERS_SCRIPT_PATH, "get_helper", payload);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("helpers:run-once", async (_event, payload) => {
+  try {
+    return await runJacLayerCommand(HELPERS_SCRIPT_PATH, "run_helper_once", payload);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("helpers:list-runs", async (_event, payload) => {
+  try {
+    return await runJacLayerCommand(HELPERS_SCRIPT_PATH, "list_helper_runs", payload, { timeoutMs: 15000 });
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle("helpers:get-run", async (_event, payload) => {
+  try {
+    return await runJacLayerCommand(HELPERS_SCRIPT_PATH, "get_helper_run", payload);
   } catch (err) {
     return { ok: false, error: err.message };
   }

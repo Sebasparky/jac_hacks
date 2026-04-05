@@ -12,6 +12,7 @@ cl {
             "getHomeUrl": lambda { return ipcRenderer.invoke("browser:get-home-url"); },
             "normalizeUrl": lambda rawInput: any { return ipcRenderer.invoke("browser:normalize-url", rawInput); },
             "getWebviewPreloadUrl": lambda { return ipcRenderer.invoke("browser:get-webview-preload-url"); },
+            "getLlmStatus": lambda { return ipcRenderer.invoke("browser:get-llm-status"); },
             "minimizeWindow": lambda { return ipcRenderer.invoke("window:minimize"); },
             "toggleMaximizeWindow": lambda { return ipcRenderer.invoke("window:toggle-maximize"); },
             "closeWindow": lambda { return ipcRenderer.invoke("window:close"); },

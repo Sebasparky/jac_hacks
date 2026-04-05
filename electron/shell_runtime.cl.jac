@@ -41,6 +41,7 @@ cl {
             "planWorkflowBtn": document.getElementById("planWorkflowBtn"),
             "sessionIdLabel": document.getElementById("sessionIdLabel"),
             "workflowIdLabel": document.getElementById("workflowIdLabel"),
+            "llmRuntimeLabel": document.getElementById("llmRuntimeLabel"),
             "layerLog": document.getElementById("layerLog"),
             "layerPanel": document.getElementById("layerPanel"),
             "progressInterval": None,
@@ -220,6 +221,37 @@ cl {
             }
             if state["workflowIdLabel"] {
                 state["workflowIdLabel"].textContent = state["activeWorkflowId"] or "none";
+            }
+        }
+
+        async def syncLlmRuntimeStatus() -> None {
+            api = browserAPI();
+            if not state["llmRuntimeLabel"] {
+                return;
+            }
+            if not api or not api.getLlmStatus {
+                state["llmRuntimeLabel"].textContent = "bridge-offline";
+                appendLayerLog("Kimi runtime status unavailable: browser bridge missing.");
+                return;
+            }
+
+            try {
+                runtime = await api.getLlmStatus();
+                active = bool(objectValue(runtime, "active", False));
+                provider = str(objectValue(runtime, "provider", "kimi") or "kimi");
+                model = str(objectValue(runtime, "model", "") or "");
+                reason = str(objectValue(runtime, "reason", "") or "");
+
+                if active {
+                    state["llmRuntimeLabel"].textContent = provider + " on";
+                    appendLayerLog("Kimi runtime active" + (" (" + model + ")" if model else ""));
+                } else {
+                    state["llmRuntimeLabel"].textContent = "inactive";
+                    appendLayerLog("Kimi runtime inactive" + (": " + reason if reason else "."));
+                }
+            } except Exception as err {
+                state["llmRuntimeLabel"].textContent = "error";
+                appendLayerLog("Kimi runtime status check failed: " + str(err.message or err));
             }
         }
 
@@ -953,6 +985,12 @@ cl {
                     state["activeWorkflowId"] = objectValue(result, "workflow_id", "") or "";
                     syncLayerStateLabels();
                     appendLayerLog("Compiled workflow " + state["activeWorkflowId"] + " (" + str(objectValue(result, "step_count", 0)) + " steps)");
+                    compileWarnings = objectValue(result, "warnings", []);
+                    if compileWarnings and typeof(compileWarnings.length) != "undefined" {
+                        for warning in compileWarnings {
+                            appendLayerLog("Compile warning: " + str(warning or ""));
+                        }
+                    }
                 } except Exception as err {
                     appendLayerLog("Compile threw: " + str(err.message or err));
                 }
@@ -988,6 +1026,7 @@ cl {
 
         async def initialize() -> None {
             syncLayerStateLabels();
+            await syncLlmRuntimeStatus();
             state["webviewPreloadUrl"] = await safeGetWebviewPreloadUrl();
             if not state["webviewPreloadUrl"] {
                 appendLayerLog("Warning: webview preload not resolved; in-page telemetry disabled.");

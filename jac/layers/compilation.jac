@@ -16,6 +16,11 @@ import time;
 import uuid;
 import from typing { Any }
 import from urllib.parse { urlparse }
+import from jac.llm.kimi_client {
+    resolve_kimi_compile_config,
+    kimi_compile_enrichment
+}
+import from jac.llm.runtime_state { current_runtime_state }
 
 # ============================================================
 # CONSTANTS
@@ -850,6 +855,44 @@ def heuristic_compile(
     };
 }
 
+"""R: Build compile privacy settings with optional Kimi enrichment enabled.
+M: Reads the local Kimi provider config and toggles compile-time LLM usage when credentials are available.
+E: Falls back to deterministic-only compilation when the provider is not configured.
+"""
+def build_privacy_settings(privacy_mode: str = "local") -> dict[str, Any] {
+    runtime_state: dict[str, Any] = current_runtime_state();
+    kimi_config: dict[str, Any] = resolve_kimi_compile_config();
+    allow_compile: bool = bool(runtime_state.get("active", False));
+
+    return {
+        "mode": privacy_mode,
+        "llmUsage": {
+            "provider": str(runtime_state.get("provider", kimi_config.get("provider", ""))),
+            "model": str(runtime_state.get("model", kimi_config.get("model", ""))),
+            "allowDuringCompile": allow_compile,
+            "allowDuringRepair": False,
+            "allowRawDomInRepair": False
+        }
+    };
+}
+
+"""R: Attach the default provider-backed model hook to compile options when available.
+M: Injects the Jac-native Kimi adapter into `model_fn` only if the caller did not already provide one.
+E: Leaves options untouched when compile-time LLM use is disabled.
+"""
+def prepare_compile_options(options: dict[str, Any]) -> dict[str, Any] {
+    prepared: dict[str, Any] = dict(options);
+    privacy: Any = prepared.get("privacy", {});
+    llm_usage: Any = privacy.get("llmUsage", {}) if isinstance(privacy, dict) else {};
+    allow_compile: bool = bool(llm_usage.get("allowDuringCompile", False)) if isinstance(llm_usage, dict) else False;
+
+    if allow_compile and prepared.get("model_fn") is None {
+        prepared["model_fn"] = kimi_compile_enrichment;
+    }
+
+    return prepared;
+}
+
 """Merge an optional model-enriched partial workflow into the heuristic result.
 Model fills gaps only — it never overwrites heuristic-derived structure.
 Enrichment: context.summary, context.successCriteria, step name, step confidence.
@@ -899,7 +942,22 @@ def merge_model_result(
         merged_steps.append(step);
     }
 
-    return {**partial, "context": ctx, "steps": merged_steps};
+    compile_info: dict[str, Any] = dict(partial.get("compileInfo", {}));
+    model_meta: Any = model_result.get("model", {});
+    if isinstance(model_meta, dict) {
+        compile_info["modelEnrichment"] = {
+            "provider": str(model_meta.get("provider", "")),
+            "model": str(model_meta.get("model", "")),
+            "thinking_mode": str(model_meta.get("thinking_mode", ""))
+        };
+    }
+
+    return {
+        **partial,
+        "context": ctx,
+        "steps": merged_steps,
+        "compileInfo": compile_info
+    };
 }
 
 # ============================================================
@@ -981,16 +1039,18 @@ def validate_workflow(candidate: dict[str, Any]) -> dict[str, Any] {
 
 """Compile a recording session dict into a validated Workflow IR.
 Pipeline: clean → heuristic compile → optional model hook → validate.
-Model hook: set options['model_fn'] = fn(session, cleaned, options) -> dict
+Model hook: set options['model_fn'] = fn(raw_session, session, cleaned, partial, options) -> dict
            and options['privacy']['llmUsage']['allowDuringCompile'] = True.
 Returns {ok, workflow, warnings} or {ok, errors, warnings}.
 """
 def compile_session(
-    session: dict[str, Any],
+    raw_session: dict[str, Any],
     options: dict[str, Any]
 ) -> dict[str, Any] {
     warnings: list[str] = [];
-    normalized_session: dict[str, Any] = normalize_session(session);
+    prepared_options: dict[str, Any] = prepare_compile_options(options);
+
+    normalized_session: dict[str, Any] = normalize_session(raw_session);
     if not normalized_session {
         return {
             "ok": False,
@@ -1013,16 +1073,20 @@ def compile_session(
     partial: dict[str, Any] = heuristic_compile(normalized_session, cleaned, options);
 
     # 3. Optional model enrichment (caller injects via model_fn)
-    model_fn: Any = options.get("model_fn", None);
-    privacy: Any = options.get("privacy", {});
+    model_fn: Any = prepared_options.get("model_fn", None);
+    privacy: Any = prepared_options.get("privacy", {});
     llm_usage: Any = privacy.get("llmUsage", {}) if isinstance(privacy, dict) else {};
     allow_llm: bool = bool(llm_usage.get("allowDuringCompile", False)) if isinstance(llm_usage, dict) else False;
 
     if model_fn is not None and allow_llm {
         try {
-            model_result: Any = model_fn(normalized_session, cleaned, options);
+            model_result: Any = model_fn(raw_session, normalized_session, cleaned, partial, prepared_options);
             if isinstance(model_result, dict) {
                 partial = merge_model_result(partial, model_result);
+                model_warning: str = str(model_result.get("_warning", ""));
+                if model_warning {
+                    warnings.append(model_warning);
+                }
             }
         } except Exception as e {
             warnings.append("Model enrichment failed: " + str(e));
@@ -1068,14 +1132,7 @@ def build_workflow(payload: dict[str, Any]) -> dict[str, Any] {
 
     options: dict[str, Any] = {
         "createdByUserId": created_by,
-        "privacy": {
-            "mode": privacy_mode,
-            "llmUsage": {
-                "allowDuringCompile": False,
-                "allowDuringRepair": False,
-                "allowRawDomInRepair": False
-            }
-        }
+        "privacy": build_privacy_settings(privacy_mode)
     };
 
     result: dict[str, Any] = compile_session(trace_data, options);
@@ -1127,14 +1184,7 @@ def dry_run_compile(payload: dict[str, Any]) -> dict[str, Any] {
 
     options: dict[str, Any] = {
         "createdByUserId": str(payload.get("created_by", "dry_run")),
-        "privacy": {
-            "mode": "local",
-            "llmUsage": {
-                "allowDuringCompile": False,
-                "allowDuringRepair": False,
-                "allowRawDomInRepair": False
-            }
-        }
+        "privacy": build_privacy_settings("local")
     };
 
     result: dict[str, Any] = compile_session(session, options);

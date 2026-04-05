@@ -147,6 +147,10 @@ cl {
                         <span className="layer-state-label">Workflow</span>
                         <span id="workflowIdLabel">none</span>
                     </div>
+                    <div className="layer-state-chip">
+                        <span className="layer-state-label">LLM</span>
+                        <span id="llmRuntimeLabel">starting</span>
+                    </div>
                 </div>
                 <pre id="layerLog" className="layer-log">Layer pipeline ready.</pre>
             </aside>

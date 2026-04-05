@@ -5,7 +5,7 @@
   "private": true,
   "main": "main.js",
   "scripts": {
-    "jac:runtime": "mkdir -p generated && jac js electron/shell_runtime.cl.jac > generated/shell_runtime.mjs && jac js electron/preload_runtime.cl.jac > generated/preload_runtime.mjs && jac js electron/webview_preload_runtime.cl.jac > generated/webview_preload_runtime.mjs",
+    "jac:runtime": "mkdir -p generated && COLUMNS=1000 jac js electron/shell_runtime.cl.jac > generated/shell_runtime.mjs && COLUMNS=1000 jac js electron/preload_runtime.cl.jac > generated/preload_runtime.mjs && COLUMNS=1000 jac js electron/webview_preload_runtime.cl.jac > generated/webview_preload_runtime.mjs",
     "start": "npm run jac:runtime && npm run jac:build && node scripts/start-electron.js",
     "dev": "npm run jac:runtime && npm run jac:build && node scripts/start-electron.js",
     "dry-run": "jac run jac/browser_core.jac",

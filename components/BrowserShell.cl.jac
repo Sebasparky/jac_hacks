@@ -148,6 +148,71 @@ cl {
                         <span id="workflowIdLabel">none</span>
                     </div>
                 </div>
+                <div
+                    id="clawPanel"
+                    className="layer-state-chip"
+                    style={{
+                        "gap": "8px",
+                        "marginBottom": "12px",
+                        "padding": "12px"
+                    }}
+                >
+                    <div>
+                        <div className="layer-state-label">Claw</div>
+                        <div style={{"color": "#1d2a3e", "fontSize": "14px", "fontWeight": "800"}}>Truthful Planner</div>
+                    </div>
+                    <div
+                        id="clawTranscript"
+                        className="layer-log"
+                        role="log"
+                        aria-live="polite"
+                        style={{
+                            "minHeight": "120px",
+                            "maxHeight": "164px",
+                            "margin": "0",
+                            "fontSize": "12px",
+                            "lineHeight": "1.65"
+                        }}
+                    >
+                        Claw is ready. Type the task below. Plan now uses the active live trace. Save draft keeps the text in this browser shell only.
+                    </div>
+                    <textarea
+                        id="clawDraftInput"
+                        rows={4}
+                        placeholder="Describe the task for Claw. Plan now uses the active live trace."
+                        spellcheck="false"
+                        style={{
+                            "width": "100%",
+                            "minHeight": "78px",
+                            "padding": "10px 12px",
+                            "borderRadius": "14px",
+                            "border": "1px solid rgba(88, 116, 173, 0.14)",
+                            "background": "#ffffff",
+                            "boxSizing": "border-box",
+                            "color": "#1f345a",
+                            "fontSize": "13px",
+                            "fontWeight": "600",
+                            "lineHeight": "1.55",
+                            "resize": "vertical"
+                        }}
+                    ></textarea>
+                    <div className="layer-panel-actions" style={{"marginBottom": "0"}}>
+                        <button id="clawPlanBtn" className="layer-btn" type="button">Plan now</button>
+                        <button id="clawSaveDraftBtn" className="layer-btn" type="button">Save draft</button>
+                    </div>
+                    <div
+                        id="clawStatus"
+                        className="layer-state-label"
+                        style={{
+                            "fontSize": "11px",
+                            "letterSpacing": "0.02em",
+                            "lineHeight": "1.45",
+                            "textTransform": "none"
+                        }}
+                    >
+                        Add a task. Plan now also needs an active live trace.
+                    </div>
+                </div>
                 <pre id="layerLog" className="layer-log">Layer pipeline ready.</pre>
             </aside>
         </div>;

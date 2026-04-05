@@ -43,10 +43,21 @@ cl {
             "workflowIdLabel": document.getElementById("workflowIdLabel"),
             "layerLog": document.getElementById("layerLog"),
             "layerPanel": document.getElementById("layerPanel"),
+            "clawTranscript": document.getElementById("clawTranscript"),
+            "clawDraftInput": document.getElementById("clawDraftInput"),
+            "clawPlanBtn": document.getElementById("clawPlanBtn"),
+            "clawSaveDraftBtn": document.getElementById("clawSaveDraftBtn"),
+            "clawStatus": document.getElementById("clawStatus"),
             "progressInterval": None,
             "progressGuardTimeout": None,
             "activeSessionId": "",
             "activeWorkflowId": "",
+            "clawDraft": "",
+            "clawTranscriptMessages": [],
+            "clawIsPlanning": False,
+            "clawStatusText": "",
+            "clawLastPlanResult": None,
+            "clawLastSavedMessage": "",
             "webviewPreloadUrl": "",
             "homeUrlCache": "",
             "homeUrlPromise": None,
@@ -131,6 +142,171 @@ cl {
             stamp = Reflect.construct(Date, []).toLocaleTimeString();
             nextText = "[" + stamp + "] " + str(message) + "\n" + str(state["layerLog"].textContent or "");
             state["layerLog"].textContent = nextText.slice(0, 7000);
+        }
+
+        def trimmedText(rawValue: any) -> str {
+            return str(rawValue or "").trim();
+        }
+
+        def commaList(values: any) -> str {
+            if not values or len(values) == 0 {
+                return "none";
+            }
+
+            joined = "";
+            for value in values {
+                if joined {
+                    joined = joined + ", ";
+                }
+                joined = joined + str(value);
+            }
+            return joined or "none";
+        }
+
+        def hasClawDraft() -> bool {
+            return trimmedText(state["clawDraft"]) != "";
+        }
+
+        def defaultClawStatus() -> str {
+            if not hasClawDraft() and not state["activeSessionId"] {
+                return "Add a task. Plan now also needs an active live trace.";
+            }
+            if not hasClawDraft() {
+                return "Add a task to use Plan now or Save draft.";
+            }
+            if not state["activeSessionId"] {
+                return "Draft ready. Start Trace to use Plan now.";
+            }
+            return "Draft ready. Plan now uses the active live trace.";
+        }
+
+        """R: Keep the Claw transcript area readable from renderer-local state.
+        M: Formats user/system entries into compact text blocks and keeps the newest message visible.
+        E: Missing transcript DOM or empty message lists fall back to a truthful default description.
+        """;
+        def renderClawTranscript() -> None {
+            if not state["clawTranscript"] {
+                return;
+            }
+
+            rendered = "";
+            for entry in state["clawTranscriptMessages"] {
+                role = str(objectValue(entry, "role", "system"));
+                prefix = "Claw";
+                if role == "user" {
+                    prefix = "You";
+                } elif role == "error" {
+                    prefix = "Claw error";
+                }
+
+                entry_text = trimmedText(objectValue(entry, "text", ""));
+                if not entry_text {
+                    continue;
+                }
+
+                stamp = trimmedText(objectValue(entry, "stamp", ""));
+                if rendered {
+                    rendered = rendered + "\n\n";
+                }
+
+                header = prefix;
+                if stamp {
+                    header = header + " | " + stamp;
+                }
+                rendered = rendered + header + "\n" + entry_text;
+            }
+
+            if not rendered {
+                rendered = (
+                    "Claw is ready.\n" +
+                    "\n" +
+                    "Type the task below.\n" +
+                    "Plan now uses the active live trace.\n" +
+                    "Save draft keeps the text in this browser shell only."
+                );
+            }
+
+            state["clawTranscript"].textContent = rendered;
+            state["clawTranscript"].scrollTop = state["clawTranscript"].scrollHeight;
+        }
+
+        """R: Sync the Claw controls with renderer-local draft and loading state.
+        M: Updates status text, button labels, disabled states, and draft textarea contents.
+        E: Missing DOM nodes are ignored so the shell can still boot without the Claw block.
+        """;
+        def syncClawUi() -> None {
+            if state["clawDraftInput"] and state["clawDraftInput"].value != state["clawDraft"] {
+                state["clawDraftInput"].value = state["clawDraft"];
+            }
+            if state["clawPlanBtn"] {
+                state["clawPlanBtn"].disabled = state["clawIsPlanning"] or not hasClawDraft();
+                state["clawPlanBtn"].textContent = "Planning..." if state["clawIsPlanning"] else "Plan now";
+                state["clawPlanBtn"].title = "Planning from the active live trace." if state["clawIsPlanning"] else (
+                    "Enter a task first." if not hasClawDraft() else (
+                        "Start Trace, then use Plan now." if not state["activeSessionId"] else "Compile and plan from the active live trace."
+                    )
+                );
+            }
+            if state["clawSaveDraftBtn"] {
+                state["clawSaveDraftBtn"].disabled = state["clawIsPlanning"] or not hasClawDraft();
+                state["clawSaveDraftBtn"].title = "Planning is in progress." if state["clawIsPlanning"] else (
+                    "Enter a task first." if not hasClawDraft() else "Save this draft in the current browser shell session."
+                );
+            }
+            if state["clawStatus"] {
+                state["clawStatus"].textContent = str(trimmedText(state["clawStatusText"]) or defaultClawStatus());
+            }
+            renderClawTranscript();
+        }
+
+        def setClawStatus(message: any) -> None {
+            state["clawStatusText"] = trimmedText(message);
+            syncClawUi();
+        }
+
+        """R: Append a bounded Claw transcript history inside renderer memory.
+        M: Records role-tagged entries with a local timestamp and trims the transcript to recent messages.
+        E: Blank messages are skipped so the panel never fills with empty transcript items.
+        """;
+        def appendClawTranscript(role: any, message: any) -> None {
+            text = trimmedText(message);
+            if not text {
+                return;
+            }
+
+            state["clawTranscriptMessages"].push({
+                "role": str(role or "system"),
+                "text": text,
+                "stamp": Reflect.construct(Date, []).toLocaleTimeString()
+            });
+
+            if len(state["clawTranscriptMessages"]) > 32 {
+                state["clawTranscriptMessages"] = state["clawTranscriptMessages"].slice(len(state["clawTranscriptMessages"]) - 32);
+            }
+            renderClawTranscript();
+        }
+
+        def clawPlanInputs(draftText: str) -> any {
+            if not draftText {
+                return {};
+            }
+            return {"query": draftText};
+        }
+
+        """R: Turn a successful planner payload into an honest, readable transcript entry.
+        M: Pulls the current workflow id, step count, and unresolved inputs into a short plain-language summary.
+        E: Missing fields degrade to stable placeholders instead of leaving the transcript blank.
+        """;
+        def formatClawPlanSummary(result: any) -> str {
+            unresolved = objectValue(result, "unresolved_inputs", []) or [];
+            workflow_id = trimmedText(objectValue(result, "workflow_id", "")) or "unknown";
+            step_count = str(objectValue(result, "step_count", 0));
+            return (
+                "Plan ready from the active live trace.\n" +
+                "Workflow: " + workflow_id + "\n" +
+                "Steps: " + step_count + "\n" +
+                "Needs input: " + commaList(unresolved)
+            );
         }
 
         def syncLayerStateLabels() -> None {
@@ -285,6 +461,163 @@ cl {
             } except Exception as err {
                 appendLayerLog("Observation append threw: " + str(err.message or err));
             }
+        }
+
+        """R: Compile the current live trace into the active workflow slot.
+        M: Validates the active session, calls the existing compile IPC path, updates workflow labels, and logs outcomes.
+        E: Missing sessions, bridge methods, or thrown errors return `{ ok: false, error }` instead of crashing handlers.
+        """;
+        async def compileActiveTrace() -> any {
+            if not state["activeSessionId"] {
+                message = "Compile skipped: no session id.";
+                appendLayerLog(message);
+                return {"ok": False, "error": message};
+            }
+
+            api = browserAPI();
+            if not api or not api.layersCompile {
+                message = "Compile failed: browser bridge unavailable.";
+                appendLayerLog(message);
+                return {"ok": False, "error": message};
+            }
+
+            try {
+                result = await api.layersCompile({"session_id": state["activeSessionId"]});
+                if not result or objectValue(result, "ok", True) == False {
+                    message = "Compile failed: " + str(objectValue(result, "error", "unknown error"));
+                    appendLayerLog(message);
+                    return result or {"ok": False, "error": message};
+                }
+
+                state["activeWorkflowId"] = objectValue(result, "workflow_id", "") or "";
+                syncLayerStateLabels();
+                appendLayerLog("Compiled workflow " + state["activeWorkflowId"] + " (" + str(objectValue(result, "step_count", 0)) + " steps)");
+                return result;
+            } except Exception as err {
+                message = "Compile threw: " + str(err.message or err);
+                appendLayerLog(message);
+                return {"ok": False, "error": message};
+            }
+        }
+
+        """R: Plan the currently compiled workflow through the existing live layer bridge.
+        M: Calls the existing planner IPC route with optional runtime inputs and returns the raw planner payload.
+        E: Missing workflow ids, bridge failures, or planner exceptions become structured `{ ok: false, error }` results.
+        """;
+        async def planActiveWorkflow(runInputs: any = {}) -> any {
+            if not state["activeWorkflowId"] {
+                message = "Plan skipped: no workflow id.";
+                appendLayerLog(message);
+                return {"ok": False, "error": message};
+            }
+
+            payload_inputs = {};
+            if runInputs and typeof(runInputs) == "object" {
+                payload_inputs = runInputs;
+            }
+
+            api = browserAPI();
+            if not api or not api.layersPlan {
+                message = "Plan failed: browser bridge unavailable.";
+                appendLayerLog(message);
+                return {"ok": False, "error": message};
+            }
+
+            try {
+                result = await api.layersPlan({"workflow_id": state["activeWorkflowId"], "inputs": payload_inputs});
+                if not result or objectValue(result, "ok", True) == False {
+                    message = "Plan failed: " + str(objectValue(result, "error", "unknown error"));
+                    appendLayerLog(message);
+                    return result or {"ok": False, "error": message};
+                }
+
+                unresolved = objectValue(result, "unresolved_inputs", []) or [];
+                planned_id = str(objectValue(result, "workflow_id", ""));
+                planned_steps = str(objectValue(result, "step_count", 0));
+                unresolved_count = str(len(unresolved));
+                planned_msg = "Planned " + planned_id + ": " + planned_steps + " steps, unresolved: " + unresolved_count;
+                appendLayerLog(planned_msg);
+                return result;
+            } except Exception as err {
+                message = "Plan threw: " + str(err.message or err);
+                appendLayerLog(message);
+                return {"ok": False, "error": message};
+            }
+        }
+
+        """R: Drive the Claw primary action without inventing backend behavior.
+        M: Records the user draft locally, compiles the active live trace, and plans the compiled workflow with the draft as `query` when applicable.
+        E: Empty drafts are ignored and missing live trace state is surfaced as an honest panel error.
+        """;
+        async def handleClawPlanNow() -> None {
+            draft_text = trimmedText(state["clawDraft"]);
+            if state["clawIsPlanning"] {
+                return;
+            }
+            if not draft_text {
+                appendClawTranscript("system", "Add a task before using Plan now.");
+                setClawStatus("Add a task before using Plan now.");
+                return;
+            }
+
+            appendClawTranscript("user", draft_text);
+            state["clawLastSavedMessage"] = "";
+            state["clawIsPlanning"] = True;
+            state["clawLastPlanResult"] = None;
+            setClawStatus("Planning from the active live trace...");
+
+            try {
+                if not state["activeSessionId"] {
+                    appendClawTranscript("error", "No active live trace yet. Start Trace, interact with the page, and then use Plan now again. Your draft is still here.");
+                    setClawStatus("No active trace. Start Trace, interact, then use Plan now.");
+                    return;
+                }
+
+                compile_result = await compileActiveTrace();
+                if not compile_result or objectValue(compile_result, "ok", True) == False {
+                    appendClawTranscript("error", "Plan could not continue because compile failed: " + str(objectValue(compile_result, "error", "unknown error")));
+                    setClawStatus("Plan blocked because compile failed.");
+                    return;
+                }
+
+                plan_result = await planActiveWorkflow(clawPlanInputs(draft_text));
+                if not plan_result or objectValue(plan_result, "ok", True) == False {
+                    appendClawTranscript("error", "Plan failed: " + str(objectValue(plan_result, "error", "unknown error")));
+                    setClawStatus("Plan failed. Check the transcript for details.");
+                    return;
+                }
+
+                state["clawLastPlanResult"] = {
+                    "workflow_id": trimmedText(objectValue(plan_result, "workflow_id", "")),
+                    "step_count": objectValue(plan_result, "step_count", 0),
+                    "unresolved_inputs": objectValue(plan_result, "unresolved_inputs", []) or []
+                };
+                appendClawTranscript("system", formatClawPlanSummary(plan_result));
+                setClawStatus("Plan ready from the live trace: " + (state["clawLastPlanResult"]["workflow_id"] or "workflow available"));
+            } finally {
+                state["clawIsPlanning"] = False;
+                syncClawUi();
+            }
+        }
+
+        """R: Confirm a draft save without claiming persistence that does not exist yet.
+        M: Keeps the draft in renderer memory, records a local confirmation, and surfaces it in the transcript/status.
+        E: Empty drafts are ignored so the save affordance does not generate fake confirmations.
+        """;
+        def handleClawSaveDraft() -> None {
+            draft_text = trimmedText(state["clawDraft"]);
+            if state["clawIsPlanning"] {
+                return;
+            }
+            if not draft_text {
+                appendClawTranscript("system", "Add a task before using Save draft.");
+                setClawStatus("Add a task before using Save draft.");
+                return;
+            }
+
+            state["clawLastSavedMessage"] = "Draft saved in this browser shell at " + Reflect.construct(Date, []).toLocaleTimeString();
+            appendClawTranscript("system", "Draft saved in this browser shell only for the current renderer session.");
+            setClawStatus(state["clawLastSavedMessage"]);
         }
 
         def setTabTitle(tab: any, titleText: any) -> None {
@@ -830,6 +1163,7 @@ cl {
                     state["activeWorkflowId"] = "";
                     syncLayerStateLabels();
                     appendLayerLog("Started trace " + state["activeSessionId"]);
+                    setClawStatus("");
                 } except Exception as err {
                     appendLayerLog("Start trace threw: " + str(err.message or err));
                 }
@@ -855,6 +1189,9 @@ cl {
                         return;
                     }
                     appendLayerLog("Stopped trace " + state["activeSessionId"] + " (" + str(objectValue(result, "event_count", 0)) + " events)");
+                    state["activeWorkflowId"] = "";
+                    syncLayerStateLabels();
+                    setClawStatus("Trace stopped. Start Trace again before using Plan now.");
                 } except Exception as err {
                     appendLayerLog("Stop trace threw: " + str(err.message or err));
                 }
@@ -864,59 +1201,48 @@ cl {
 
         state["compileTraceBtn"].addEventListener("click", lambda {
             async def handle {
-                if not state["activeSessionId"] {
-                    appendLayerLog("Compile skipped: no session id.");
-                    return;
-                }
-                api = browserAPI();
-                if not api or not api.layersCompile {
-                    appendLayerLog("Compile failed: browser bridge unavailable.");
-                    return;
-                }
-                try {
-                    result = await api.layersCompile({"session_id": state["activeSessionId"]});
-                    if not result or objectValue(result, "ok", True) == False {
-                        appendLayerLog("Compile failed: " + str(objectValue(result, "error", "unknown error")));
-                        return;
-                    }
-                    state["activeWorkflowId"] = objectValue(result, "workflow_id", "") or "";
-                    syncLayerStateLabels();
-                    appendLayerLog("Compiled workflow " + state["activeWorkflowId"] + " (" + str(objectValue(result, "step_count", 0)) + " steps)");
-                } except Exception as err {
-                    appendLayerLog("Compile threw: " + str(err.message or err));
-                }
+                await compileActiveTrace();
             }
             handle();
         });
 
         state["planWorkflowBtn"].addEventListener("click", lambda {
             async def handle {
-                if not state["activeWorkflowId"] {
-                    appendLayerLog("Plan skipped: no workflow id.");
-                    return;
-                }
-                api = browserAPI();
-                if not api or not api.layersPlan {
-                    appendLayerLog("Plan failed: browser bridge unavailable.");
-                    return;
-                }
-                try {
-                    result = await api.layersPlan({"workflow_id": state["activeWorkflowId"], "inputs": {}});
-                    if not result or objectValue(result, "ok", True) == False {
-                        appendLayerLog("Plan failed: " + str(objectValue(result, "error", "unknown error")));
-                        return;
-                    }
-                    unresolved = objectValue(result, "unresolved_inputs", []) or [];
-                    appendLayerLog("Planned " + str(objectValue(result, "workflow_id", "")) + ": " + str(objectValue(result, "step_count", 0)) + " steps, unresolved: " + str(len(unresolved)));
-                } except Exception as err {
-                    appendLayerLog("Plan threw: " + str(err.message or err));
-                }
+                await planActiveWorkflow();
             }
             handle();
         });
 
+        if state["clawDraftInput"] {
+            state["clawDraftInput"].addEventListener("input", lambda event {
+                target = event.currentTarget or event.target;
+                state["clawDraft"] = str(target.value or "");
+                if not state["clawIsPlanning"] {
+                    state["clawStatusText"] = "";
+                    syncClawUi();
+                }
+            });
+        }
+
+        if state["clawPlanBtn"] {
+            state["clawPlanBtn"].addEventListener("click", lambda {
+                async def handle {
+                    await handleClawPlanNow();
+                }
+                handle();
+            });
+        }
+
+        if state["clawSaveDraftBtn"] {
+            state["clawSaveDraftBtn"].addEventListener("click", lambda {
+                handleClawSaveDraft();
+            });
+        }
+
         async def initialize() -> None {
             syncLayerStateLabels();
+            appendClawTranscript("system", "Claw is ready. Type the task below. Plan now uses the active live trace. Save draft keeps the text in this browser shell only.");
+            syncClawUi();
             state["webviewPreloadUrl"] = await safeGetWebviewPreloadUrl();
             if not state["webviewPreloadUrl"] {
                 appendLayerLog("Warning: webview preload not resolved; in-page telemetry disabled.");

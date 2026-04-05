@@ -14,3 +14,5 @@ jac/layer_data/
 generated/
 dist/
 build/
+open_claw/
+.DS_Store

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Jac Browser
+Comment=Jac Browser
+Exec=electron .
+Icon=/home/ekersey/jac_hacks/assets/jac-browser-icon.png
+StartupWMClass=Jac Browser
+Categories=Development;
+Terminal=false

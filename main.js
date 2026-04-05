@@ -4,13 +4,20 @@ const { pathToFileURL } = require("url");
 const { execFile } = require("child_process");
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 
+const APP_DISPLAY_NAME = "Jac Browser";
+app.commandLine.appendSwitch("class", APP_DISPLAY_NAME);
 const JAC_SCRIPT_PATH = path.join(__dirname, "jac", "browser_core.jac");
 const WEBVIEW_PRELOAD_URL = pathToFileURL(path.join(__dirname, "webview_preload.js")).toString();
 const OBSERVATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "observation.jac");
 const COMPILATION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "compilation.jac");
 const EXECUTION_SCRIPT_PATH = path.join(__dirname, "jac", "layers", "execution.jac");
 const CLIENT_INDEX_PATH = path.join(__dirname, ".jac", "client", "dist", "index.html");
-const DEFAULT_URL = "https://example.com";
+const APP_ICON_PATH = path.join(
+  __dirname,
+  "assets",
+  process.platform === "win32" ? "jac-browser-icon.ico" : "jac-browser-icon.png"
+);
+const DEFAULT_URL = "https://www.google.com";
 const RESTORE_BOUNDS = new WeakMap();
 const URL_CACHE_TTL_MS = 5 * 60 * 1000;
 const URL_CACHE_LIMIT = 160;
@@ -206,6 +213,7 @@ function runJacLayerCommand(scriptPath, command, payload = {}) {
  */
 function createWindow() {
   const win = new BrowserWindow({
+    title: APP_DISPLAY_NAME,
     width: 1480,
     height: 940,
     minWidth: 980,
@@ -213,6 +221,7 @@ function createWindow() {
     frame: false,
     show: false,
     backgroundColor: "#edf4e3",
+    icon: fs.existsSync(APP_ICON_PATH) ? APP_ICON_PATH : undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -240,6 +249,15 @@ function createWindow() {
 
   console.warn("[window] Jac client bundle missing; falling back to legacy index.html");
   win.loadFile(path.join(__dirname, "index.html"));
+}
+
+app.setName(APP_DISPLAY_NAME);
+app.name = APP_DISPLAY_NAME;
+if (typeof app.setAppUserModelId === "function") {
+  app.setAppUserModelId("com.jac.browser");
+}
+if (process.platform === "linux" && typeof app.setDesktopName === "function") {
+  app.setDesktopName("jac-browser.desktop");
 }
 
 ipcMain.handle("window:minimize", (event) => {

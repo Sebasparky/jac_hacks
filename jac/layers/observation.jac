@@ -14,6 +14,11 @@ glob ALLOWED_EVENT_TYPES: list[str] = [
     "input",
     "submit",
     "network",
+    "scroll",
+    "session_state",
+    "page_semantic",
+    "dom_snapshot",
+    "screenshot",
     "page_ready",
     "tab_created",
     "tab_closed",
@@ -63,7 +68,66 @@ def safe_float(raw: Any) -> float {
         return float(raw);
     } except ValueError {
         return 0.0;
+    } except TypeError {
+        return 0.0;
     }
+}
+
+"""R: Parse an int from arbitrary input.
+M: Attempts `int(raw)` and falls back to zero on invalid values.
+E: Invalid numbers return 0.
+"""
+def safe_int(raw: Any) -> int {
+    try {
+        return int(raw);
+    } except ValueError {
+        return 0;
+    } except TypeError {
+        return 0;
+    }
+}
+
+"""R: Recursively sanitize JSON-like values for trace persistence.
+M: Bounds nesting depth, collection size, and string length.
+E: Unsupported values are string-cast and truncated.
+"""
+def sanitize_json_value(raw: Any, depth: int, max_items: int, max_len: int) -> Any {
+    if depth <= 0 {
+        return safe_str(raw, max_len);
+    }
+
+    if isinstance(raw, dict) {
+        normalized: dict[str, Any] = {};
+        count: int = 0;
+        for key in raw {
+            if count >= max_items {
+                break;
+            }
+            safe_key: str = safe_str(key, 80);
+            normalized[safe_key] = sanitize_json_value(raw[key], depth - 1, max_items, max_len);
+            count += 1;
+        }
+        return normalized;
+    }
+
+    if isinstance(raw, list) {
+        normalized_list: list[Any] = [];
+        count: int = 0;
+        for item in raw {
+            if count >= max_items {
+                break;
+            }
+            normalized_list.append(sanitize_json_value(item, depth - 1, max_items, max_len));
+            count += 1;
+        }
+        return normalized_list;
+    }
+
+    if isinstance(raw, bool) or isinstance(raw, int) or isinstance(raw, float) {
+        return raw;
+    }
+
+    return safe_str(raw, max_len);
 }
 
 """R: Ensure observation trace storage path exists.
@@ -190,7 +254,8 @@ def normalize_target(raw_target: Any) -> dict[str, str] {
         "label": "",
         "text": "",
         "placeholder": "",
-        "class_name": ""
+        "class_name": "",
+        "path": ""
     };
 
     if not isinstance(raw_target, dict) {
@@ -206,6 +271,7 @@ def normalize_target(raw_target: Any) -> dict[str, str] {
     target["text"] = safe_str(raw_target.get("text", ""), 180);
     target["placeholder"] = safe_str(raw_target.get("placeholder", ""), 140);
     target["class_name"] = safe_str(raw_target.get("class_name", ""), 220);
+    target["path"] = safe_str(raw_target.get("path", ""), 300);
 
     return target;
 }
@@ -222,6 +288,8 @@ def normalize_meta(raw_meta: Any) -> dict[str, Any] {
         "kind": "",
         "method": "",
         "request_url": "",
+        "initiator_type": "",
+        "content_type": "",
         "status": 0,
         "ok": False,
         "duration_ms": 0,
@@ -238,10 +306,114 @@ def normalize_meta(raw_meta: Any) -> dict[str, Any] {
     normalized["kind"] = safe_str(raw_meta.get("kind", ""), 40);
     normalized["method"] = safe_str(raw_meta.get("method", ""), 20).upper();
     normalized["request_url"] = safe_str(raw_meta.get("request_url", ""), 300);
-    normalized["status"] = int(raw_meta.get("status", 0));
+    normalized["initiator_type"] = safe_str(raw_meta.get("initiator_type", ""), 40);
+    normalized["content_type"] = safe_str(raw_meta.get("content_type", ""), 120);
+    normalized["status"] = safe_int(raw_meta.get("status", 0));
     normalized["ok"] = bool(raw_meta.get("ok", False));
-    normalized["duration_ms"] = int(raw_meta.get("duration_ms", 0));
+    normalized["duration_ms"] = safe_int(raw_meta.get("duration_ms", 0));
     normalized["error"] = safe_str(raw_meta.get("error", ""), 160);
+
+    return normalized;
+}
+
+"""R: Normalize viewport/scroll telemetry for safe persistence.
+M: Keeps common numeric viewport fields and truncates extra data conservatively.
+E: Missing/non-dict payloads return empty defaults.
+"""
+def normalize_viewport(raw_viewport: Any) -> dict[str, Any] {
+    normalized: dict[str, Any] = {
+        "scroll_x": 0,
+        "scroll_y": 0,
+        "viewport_width": 0,
+        "viewport_height": 0,
+        "document_width": 0,
+        "document_height": 0,
+        "scroll_progress": 0.0
+    };
+
+    if not isinstance(raw_viewport, dict) {
+        return normalized;
+    }
+
+    normalized["scroll_x"] = safe_int(raw_viewport.get("scroll_x", 0));
+    normalized["scroll_y"] = safe_int(raw_viewport.get("scroll_y", 0));
+    normalized["viewport_width"] = safe_int(raw_viewport.get("viewport_width", 0));
+    normalized["viewport_height"] = safe_int(raw_viewport.get("viewport_height", 0));
+    normalized["document_width"] = safe_int(raw_viewport.get("document_width", 0));
+    normalized["document_height"] = safe_int(raw_viewport.get("document_height", 0));
+    normalized["scroll_progress"] = safe_float(raw_viewport.get("scroll_progress", 0));
+
+    return normalized;
+}
+
+"""R: Normalize DOM snapshot payloads with bounded nested structure.
+M: Preserves headings, form summaries, active element metadata, and HTML excerpts.
+E: Large strings and lists are truncated for trace stability.
+"""
+def normalize_dom_snapshot(raw_snapshot: Any) -> dict[str, Any] {
+    if not isinstance(raw_snapshot, dict) {
+        return {};
+    }
+    return sanitize_json_value(raw_snapshot, 4, 16, 2800);
+}
+
+"""R: Normalize page/session introspection payloads with bounded nested structure.
+M: Preserves cookies, storage previews, navigator info, and routing context.
+E: Only page-visible/session-readable state can be captured.
+"""
+def normalize_session_state(raw_state: Any) -> dict[str, Any] {
+    if not isinstance(raw_state, dict) {
+        return {};
+    }
+    return sanitize_json_value(raw_state, 4, 18, 700);
+}
+
+"""R: Normalize semantic workflow/page descriptors.
+M: Preserves lightweight heuristic context such as page kind, stage, actions, and headings.
+E: Unknown/non-dict payloads map to empty dict.
+"""
+def normalize_semantic(raw_semantic: Any) -> dict[str, Any] {
+    if not isinstance(raw_semantic, dict) {
+        return {};
+    }
+    return sanitize_json_value(raw_semantic, 4, 18, 240);
+}
+
+"""R: Normalize network telemetry payloads for safe persistence.
+M: Preserves request/response metadata, headers, sizes, and timing with bounded fields.
+E: Payloads remain metadata-only; response bodies are not persisted.
+"""
+def normalize_network(raw_network: Any) -> dict[str, Any] {
+    if not isinstance(raw_network, dict) {
+        return {};
+    }
+    return sanitize_json_value(raw_network, 4, 18, 320);
+}
+
+"""R: Normalize screenshot telemetry payloads.
+M: Preserves mime, dimensions, trigger, and one small captured image data URL.
+E: Empty/non-dict payloads map to empty dict; image size is bounded.
+"""
+def normalize_screenshot(raw_screenshot: Any) -> dict[str, Any] {
+    normalized: dict[str, Any] = {
+        "mime": "",
+        "trigger": "",
+        "width": 0,
+        "height": 0,
+        "data_url": "",
+        "capture_error": ""
+    };
+
+    if not isinstance(raw_screenshot, dict) {
+        return {};
+    }
+
+    normalized["mime"] = safe_str(raw_screenshot.get("mime", ""), 40);
+    normalized["trigger"] = safe_str(raw_screenshot.get("trigger", ""), 40);
+    normalized["width"] = safe_int(raw_screenshot.get("width", 0));
+    normalized["height"] = safe_int(raw_screenshot.get("height", 0));
+    normalized["data_url"] = safe_str(raw_screenshot.get("data_url", ""), 220000);
+    normalized["capture_error"] = safe_str(raw_screenshot.get("capture_error", ""), 200);
 
     return normalized;
 }
@@ -278,6 +450,12 @@ def normalize_event(raw_event: Any, default_url: str) -> dict[str, Any] {
     event_value: str = "";
     target: dict[str, str] = normalize_target({});
     meta: dict[str, Any] = normalize_meta({});
+    viewport: dict[str, Any] = normalize_viewport({});
+    dom_snapshot: dict[str, Any] = {};
+    session_state: dict[str, Any] = {};
+    semantic: dict[str, Any] = {};
+    network: dict[str, Any] = {};
+    screenshot: dict[str, Any] = {};
 
     if isinstance(raw_event, dict) {
         event_type_candidate = safe_str(raw_event.get("type", ""), 40).lower();
@@ -292,6 +470,12 @@ def normalize_event(raw_event: Any, default_url: str) -> dict[str, Any] {
 
         target = normalize_target(raw_event.get("target", {}));
         meta = normalize_meta(raw_event.get("meta", {}));
+        viewport = normalize_viewport(raw_event.get("viewport", {}));
+        dom_snapshot = normalize_dom_snapshot(raw_event.get("dom_snapshot", {}));
+        session_state = normalize_session_state(raw_event.get("session_state", {}));
+        semantic = normalize_semantic(raw_event.get("semantic", {}));
+        network = normalize_network(raw_event.get("network", {}));
+        screenshot = normalize_screenshot(raw_event.get("screenshot", {}));
 
         if "value" in raw_event {
             event_value = safe_str(raw_event.get("value", ""), 300);
@@ -308,6 +492,12 @@ def normalize_event(raw_event: Any, default_url: str) -> dict[str, Any] {
         "value": event_value,
         "target": target,
         "meta": meta,
+        "viewport": viewport,
+        "dom_snapshot": dom_snapshot,
+        "session_state": session_state,
+        "semantic": semantic,
+        "network": network,
+        "screenshot": screenshot,
         "recorded_at": timestamp_now()
     };
 }
@@ -319,6 +509,10 @@ E: Signature intentionally ignores timestamp and minor non-core metadata.
 def event_signature(event_data: dict[str, Any]) -> str {
     target = normalize_target(event_data.get("target", {}));
     meta = normalize_meta(event_data.get("meta", {}));
+    viewport = normalize_viewport(event_data.get("viewport", {}));
+    semantic = normalize_semantic(event_data.get("semantic", {}));
+    network = normalize_network(event_data.get("network", {}));
+    dom_snapshot = normalize_dom_snapshot(event_data.get("dom_snapshot", {}));
 
     return (
         safe_str(event_data.get("type", ""), 40) + "|" +
@@ -337,7 +531,14 @@ def event_signature(event_data: dict[str, Any]) -> str {
         meta["kind"] + "|" +
         meta["method"] + "|" +
         meta["request_url"] + "|" +
-        str(meta["status"])
+        str(meta["status"]) + "|" +
+        str(viewport.get("scroll_y", 0)) + "|" +
+        str(viewport.get("scroll_progress", 0)) + "|" +
+        safe_str(semantic.get("page_kind", ""), 80) + "|" +
+        safe_str(semantic.get("workflow_stage", ""), 80) + "|" +
+        safe_str(network.get("request_url", ""), 300) + "|" +
+        safe_str(network.get("kind", ""), 40) + "|" +
+        safe_str(dom_snapshot.get("target_path", ""), 300)
     );
 }
 
@@ -385,6 +586,7 @@ def start_trace(payload: dict[str, Any]) -> dict[str, Any] {
         "status": "recording",
         "started_at": timestamp_now(),
         "updated_at": timestamp_now(),
+        "telemetry_counts": {},
         "events": []
     };
 
@@ -437,6 +639,32 @@ def append_trace_event(payload: dict[str, Any]) -> dict[str, Any] {
     events.append(normalized);
     trace_data["events"] = events;
     trace_data["updated_at"] = timestamp_now();
+
+    event_type = safe_str(normalized.get("type", "unknown"), 40);
+    telemetry_counts: dict[str, Any] = {};
+    raw_counts = trace_data.get("telemetry_counts", {});
+    if isinstance(raw_counts, dict) {
+        telemetry_counts = raw_counts;
+    }
+    telemetry_counts[event_type] = safe_int(telemetry_counts.get(event_type, 0)) + 1;
+    trace_data["telemetry_counts"] = telemetry_counts;
+
+    if normalized.get("viewport", {}) {
+        trace_data["latest_viewport"] = normalized["viewport"];
+    }
+    if normalized.get("semantic", {}) {
+        trace_data["latest_semantic"] = normalized["semantic"];
+    }
+    if normalized.get("session_state", {}) {
+        trace_data["latest_session_state"] = normalized["session_state"];
+    }
+    if normalized.get("dom_snapshot", {}) {
+        trace_data["latest_dom_snapshot"] = normalized["dom_snapshot"];
+    }
+    if normalized.get("screenshot", {}) {
+        trace_data["latest_screenshot"] = normalized["screenshot"];
+    }
+
     write_trace(session_id, trace_data);
 
     return {

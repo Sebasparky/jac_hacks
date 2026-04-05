@@ -1,7 +1,7 @@
 """Jac-authored browser shell that boots the Electron browser runtime."""
 
 cl import from 'react' { useEffect as reactUseEffect }
-cl import from '../generated/shell_runtime.mjs' { bootstrapBrowserShell }
+cl import from '../../../../generated/shell_runtime.mjs' { bootstrapBrowserShell }
 
 cl {
     def:pub BrowserShell() -> JsxElement {
@@ -15,7 +15,7 @@ cl {
                 <div className="tab-strip">
                     <div className="chrome-brand" aria-hidden="true">
                         <span className="brand-mark"></span>
-                        <span className="brand-copy">JacHacks</span>
+                        <span className="brand-copy">Jac Browser</span>
                     </div>
                     <div id="tabList" className="tab-list"></div>
                     <button id="newTabBtn" className="new-tab-btn" type="button" title="New Tab" aria-label="New Tab">
@@ -109,9 +109,9 @@ cl {
                         <span className="bookmark-favicon electron"></span>
                         <span>Electron</span>
                     </button>
-                    <button className="bookmark-item" type="button" data-nav-url="https://duckduckgo.com/">
+                    <button className="bookmark-item" type="button" data-nav-url="https://www.google.com/">
                         <span className="bookmark-favicon search"></span>
-                        <span>Search</span>
+                        <span>Google</span>
                     </button>
                     <div className="bookmark-spacer"></div>
                     <button className="bookmark-folder" type="button">All Bookmarks</button>

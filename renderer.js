@@ -32,8 +32,8 @@ const bookmarkButtons = Array.from(document.querySelectorAll(".bookmark-item[dat
 let progressInterval = null;
 let progressGuardTimeout = null;
 
-const DEFAULT_URL = "https://example.com";
-const SEARCH_URL = "https://duckduckgo.com/?q=";
+const DEFAULT_URL = "https://www.google.com";
+const SEARCH_URL = "https://www.google.com/search?q=";
 
 let activeSessionId = "";
 let activeWorkflowId = "";

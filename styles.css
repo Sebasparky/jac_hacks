@@ -115,19 +115,9 @@ body {
 }
 
 .brand-mark {
-  position: relative;
   width: 20px;
   height: 20px;
-  border-radius: 999px;
-  background: conic-gradient(from 210deg, #2255d4, #47a6ff, #7ad8bf, #bedf69, #2255d4);
-}
-
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  inset: 4px;
-  border-radius: inherit;
-  background: rgba(255, 255, 255, 0.72);
+  background: center / contain no-repeat url("./assets/jac-browser-icon.svg");
 }
 
 .brand-copy {

@@ -15,8 +15,8 @@ cl {
         }
         shellRoot.setAttribute("data-jac-booted", "true");
 
-        DEFAULT_URL = "https://example.com";
-        SEARCH_URL = "https://duckduckgo.com/?q=";
+        DEFAULT_URL = "https://www.google.com";
+        SEARCH_URL = "https://www.google.com/search?q=";
 
         state = {
             "viewport": document.getElementById("viewport"),
@@ -74,6 +74,87 @@ cl {
                 return fallback;
             }
             return value;
+        }
+
+        def copyObservationSections(source: any, target: any) -> None {
+            optionalKeys = [
+                "viewport",
+                "dom_snapshot",
+                "session_state",
+                "semantic",
+                "network",
+                "screenshot"
+            ];
+            for key in optionalKeys {
+                if source and typeof(source) == "object" and key in source {
+                    target[key] = source[key];
+                }
+            }
+        }
+
+        async def captureObservationScreenshot(webview: any, trigger: any) -> any {
+            if not webview or not webview.capturePage {
+                return {};
+            }
+
+            try {
+                image = await webview.capturePage();
+                if not image {
+                    return {};
+                }
+
+                resized = image;
+                size = image.getSize() if image.getSize else {"width": 0, "height": 0};
+                width = Number(size.width or 0);
+                if width > 420 and image.resize {
+                    resized = image.resize({"width": 420});
+                }
+
+                finalSize = resized.getSize() if resized.getSize else {"width": 0, "height": 0};
+                return {
+                    "mime": "image/png",
+                    "trigger": str(trigger or ""),
+                    "width": Number(finalSize.width or 0),
+                    "height": Number(finalSize.height or 0),
+                    "data_url": str(resized.toDataURL() or "")
+                };
+            } except Exception as err {
+                return {
+                    "trigger": str(trigger or ""),
+                    "capture_error": str(err.message or err)
+                };
+            }
+        }
+
+        async def forwardObservationPayload(tab: any, rawPayload: any) -> None {
+            if not rawPayload or typeof(rawPayload) != "object" {
+                return;
+            }
+
+            webview = tab["webview"];
+            meta = rawPayload["meta"] or {};
+            if not objectValue(meta, "source", "") {
+                meta["source"] = "page";
+            }
+            meta["tab_id"] = tab["id"];
+
+            forwardPayload = {
+                "type": rawPayload["type"] or "unknown",
+                "url": rawPayload["url"] or webview.getURL() or tab["url"] or "",
+                "target": rawPayload["target"] or {},
+                "value": rawPayload["value"] if "value" in rawPayload else "",
+                "meta": meta
+            };
+            copyObservationSections(rawPayload, forwardPayload);
+
+            if bool(objectValue(rawPayload, "capture_screenshot", False)) {
+                screenshot = await captureObservationScreenshot(webview, rawPayload["type"] or "unknown");
+                if screenshot and typeof(screenshot) == "object" and Object.keys(screenshot).length > 0 {
+                    forwardPayload["screenshot"] = screenshot;
+                }
+            }
+
+            recordObservationEvent(forwardPayload);
         }
 
         def setProgress(value: any) -> None {
@@ -270,6 +351,7 @@ cl {
                 "value": str(eventPayload["value"] or "") if "value" in eventPayload else "",
                 "meta": eventPayload["meta"] or {}
             };
+            copyObservationSections(eventPayload, payload);
             if not objectValue(payload["meta"], "tab_id", "") {
                 payload["meta"]["tab_id"] = state["activeTabId"] or "";
             }
@@ -542,18 +624,7 @@ cl {
                 if not payload or typeof(payload) != "object" {
                     return;
                 }
-                meta = payload["meta"] or {};
-                if not objectValue(meta, "source", "") {
-                    meta["source"] = "page";
-                }
-                meta["tab_id"] = tab["id"];
-                recordObservationEvent({
-                    "type": payload["type"] or "unknown",
-                    "url": payload["url"] or webview.getURL() or tab["url"] or "",
-                    "target": payload["target"] or {},
-                    "value": payload["value"] if "value" in payload else "",
-                    "meta": meta
-                });
+                forwardObservationPayload(tab, payload);
             });
         }
 

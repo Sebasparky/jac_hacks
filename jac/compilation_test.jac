@@ -312,6 +312,52 @@ def test_masked_input_becomes_secret() {
     assert_eq("masked: fill value kind is secret", kind, "secret");
 }
 
+def test_compile_session_live_schema() {
+    session: dict[str, Any] = {
+        "session_id": "sess_live_1",
+        "source_url": "https://app.example.com/login",
+        "title": "Log in from live trace",
+        "events": [
+            {
+                "type": "navigate",
+                "url": "https://app.example.com/login",
+                "recorded_at": ts(0),
+                "target": {}
+            },
+            {
+                "type": "input",
+                "url": "https://app.example.com/login",
+                "recorded_at": ts(1000),
+                "target": {"tag": "input", "name": "email", "label": "Email", "type": "email"},
+                "value": "user@test.com"
+            }
+        ]
+    };
+
+    result: dict[str, Any] = compile_session(session, DEFAULT_OPTIONS);
+    assert_true("live schema: ok is True", bool(result.get("ok", False)));
+
+    wf: Any = result.get("workflow", {});
+    steps: list[Any] = wf.get("steps", []);
+    goto_steps: list[Any] = [s for s in steps if isinstance(s, dict) and s.get("type") == "goto"];
+    fill_steps: list[Any] = [s for s in steps if isinstance(s, dict) and s.get("type") == "fill"];
+
+    assert_eq("live schema: navigate becomes goto", len(goto_steps), 1);
+    assert_eq("live schema: input becomes fill", len(fill_steps), 1);
+    assert_eq("live schema: title becomes workflow name", str(wf.get("name", "")), "Log in from live trace");
+    assert_eq(
+        "live schema: session_id becomes recording session id",
+        str(wf.get("metadata", {}).get("source", {}).get("recordingSessionId", "")),
+        "sess_live_1"
+    );
+
+    origins: list[Any] = wf.get("compileInfo", {}).get("stepOrigins", []);
+    first_origin: Any = origins[0] if origins else {};
+    source_ids: list[Any] = first_origin.get("sourceEventIds", []) if isinstance(first_origin, dict) else [];
+    first_source_id: str = str(source_ids[0]) if source_ids else "";
+    assert_true("live schema: missing ids are synthesized", first_source_id.startswith("evt_sess_live_1_"));
+}
+
 def test_validate_rejects_partial() {
     bad: dict[str, Any] = {"name": "broken", "steps": []};
     r: dict[str, Any] = validate_workflow(bad);
@@ -628,6 +674,7 @@ with entry {
     test_remove_noise();
     test_compile_session();
     test_masked_input_becomes_secret();
+    test_compile_session_live_schema();
     test_validate_rejects_partial();
     test_infer_safety_rules();
 

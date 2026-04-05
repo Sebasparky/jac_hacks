@@ -78,6 +78,12 @@ cl {
                     </form>
 
                     <div className="toolbar-actions">
+                        <button id="showBrowserViewBtn" className="toolbar-pill" type="button" title="Show Browser View" aria-pressed="true">
+                            Browser
+                        </button>
+                        <button id="showHelpersViewBtn" className="toolbar-pill" type="button" title="Show Helpers View" aria-pressed="false">
+                            Helpers
+                        </button>
                         <button id="toggleLayersBtn" className="toolbar-pill" type="button" title="Toggle Layer Panel" aria-pressed="true">
                             Layers
                         </button>
@@ -123,6 +129,161 @@ cl {
             </header>
 
             <main id="viewport" className="viewport"></main>
+            <section
+                id="helpersPage"
+                aria-label="Helpers"
+                style={{
+                    "display": "none",
+                    "flex": "1 1 auto",
+                    "minHeight": "0",
+                    "padding": "20px 18px 18px",
+                    "boxSizing": "border-box",
+                    "background": "linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%)",
+                    "overflow": "auto"
+                }}
+            >
+                <div
+                    style={{
+                        "display": "flex",
+                        "flexDirection": "column",
+                        "gap": "16px",
+                        "minHeight": "100%"
+                    }}
+                >
+                    <div
+                        style={{
+                            "display": "flex",
+                            "alignItems": "center",
+                            "justifyContent": "space-between",
+                            "gap": "16px",
+                            "padding": "20px 22px",
+                            "borderRadius": "24px",
+                            "border": "1px solid rgba(88, 116, 173, 0.12)",
+                            "background": "rgba(255, 255, 255, 0.92)",
+                            "boxShadow": "0 14px 34px rgba(52, 81, 126, 0.08)"
+                        }}
+                    >
+                        <div style={{"display": "flex", "flexDirection": "column", "gap": "6px"}}>
+                            <div className="layer-state-label" style={{"fontSize": "11px"}}>Local demo workspace</div>
+                            <div style={{"color": "#183154", "fontSize": "28px", "fontWeight": "800", "letterSpacing": "-0.03em"}}>
+                                Helpers
+                            </div>
+                            <div style={{"color": "#526885", "fontSize": "13px", "lineHeight": "1.6", "maxWidth": "720px"}}>
+                                Review helper briefs, edit local instructions, and capture demo runs without leaving the live browser shell.
+                            </div>
+                        </div>
+                        <button id="helpersPageCreateBtn" className="layer-btn" type="button" style={{"minWidth": "148px"}}>
+                            Create Helper
+                        </button>
+                    </div>
+
+                    <div
+                        style={{
+                            "display": "grid",
+                            "gridTemplateColumns": "minmax(260px, 320px) minmax(0, 1fr)",
+                            "gap": "16px",
+                            "alignItems": "stretch",
+                            "minHeight": "0",
+                            "flex": "1 1 auto"
+                        }}
+                    >
+                        <section
+                            style={{
+                                "display": "flex",
+                                "flexDirection": "column",
+                                "gap": "12px",
+                                "minHeight": "0",
+                                "padding": "18px",
+                                "borderRadius": "24px",
+                                "border": "1px solid rgba(88, 116, 173, 0.12)",
+                                "background": "rgba(255, 255, 255, 0.94)",
+                                "boxShadow": "0 14px 30px rgba(52, 81, 126, 0.07)"
+                            }}
+                        >
+                            <div>
+                                <div className="layer-state-label" style={{"fontSize": "11px"}}>All helpers</div>
+                                <div style={{"marginTop": "4px", "color": "#1d2a3e", "fontSize": "18px", "fontWeight": "800"}}>Helper List</div>
+                            </div>
+                            <div
+                                id="helpersPageList"
+                                style={{
+                                    "display": "flex",
+                                    "flexDirection": "column",
+                                    "gap": "10px",
+                                    "minHeight": "0"
+                                }}
+                            >
+                                No helpers yet. Create one to populate this local workspace.
+                            </div>
+                        </section>
+
+                        <div
+                            style={{
+                                "display": "flex",
+                                "flexDirection": "column",
+                                "gap": "16px",
+                                "minHeight": "0"
+                            }}
+                        >
+                            <section
+                                style={{
+                                    "display": "flex",
+                                    "flexDirection": "column",
+                                    "gap": "12px",
+                                    "padding": "18px",
+                                    "borderRadius": "24px",
+                                    "border": "1px solid rgba(88, 116, 173, 0.12)",
+                                    "background": "rgba(255, 255, 255, 0.94)",
+                                    "boxShadow": "0 14px 30px rgba(52, 81, 126, 0.07)"
+                                }}
+                            >
+                                <div>
+                                    <div className="layer-state-label" style={{"fontSize": "11px"}}>Selected helper</div>
+                                    <div style={{"marginTop": "4px", "color": "#1d2a3e", "fontSize": "18px", "fontWeight": "800"}}>Detail</div>
+                                </div>
+                                <div
+                                    id="helpersPageDetail"
+                                    style={{
+                                        "display": "flex",
+                                        "flexDirection": "column",
+                                        "gap": "12px"
+                                    }}
+                                >
+                                    Select a helper to inspect its local instructions and run state.
+                                </div>
+                            </section>
+
+                            <section
+                                style={{
+                                    "display": "flex",
+                                    "flexDirection": "column",
+                                    "gap": "12px",
+                                    "padding": "18px",
+                                    "borderRadius": "24px",
+                                    "border": "1px solid rgba(88, 116, 173, 0.12)",
+                                    "background": "rgba(255, 255, 255, 0.94)",
+                                    "boxShadow": "0 14px 30px rgba(52, 81, 126, 0.07)"
+                                }}
+                            >
+                                <div>
+                                    <div className="layer-state-label" style={{"fontSize": "11px"}}>Recent runs</div>
+                                    <div style={{"marginTop": "4px", "color": "#1d2a3e", "fontSize": "18px", "fontWeight": "800"}}>Results</div>
+                                </div>
+                                <div
+                                    id="helpersPageResults"
+                                    style={{
+                                        "display": "flex",
+                                        "flexDirection": "column",
+                                        "gap": "10px"
+                                    }}
+                                >
+                                    Run a helper to capture a local demo result history here.
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
             <aside id="layerPanel" className="layer-panel">
                 <div className="layer-panel-header">
@@ -201,6 +362,41 @@ cl {
                         <button id="clawSaveDraftBtn" className="layer-btn" type="button">Save draft</button>
                     </div>
                     <div
+                        style={{
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "gap": "8px"
+                        }}
+                    >
+                        <button id="createHelperBtn" className="layer-btn" type="button">Create Helper</button>
+                        <div
+                            style={{
+                                "display": "flex",
+                                "flexDirection": "column",
+                                "gap": "6px",
+                                "padding": "10px 12px",
+                                "borderRadius": "14px",
+                                "border": "1px solid rgba(88, 116, 173, 0.12)",
+                                "background": "rgba(244, 247, 255, 0.82)"
+                            }}
+                        >
+                            <div className="layer-state-label" style={{"fontSize": "11px"}}>Helpers</div>
+                            <div
+                                id="helperList"
+                                style={{
+                                    "display": "flex",
+                                    "flexDirection": "column",
+                                    "gap": "8px",
+                                    "color": "#445a7d",
+                                    "fontSize": "12px",
+                                    "lineHeight": "1.55"
+                                }}
+                            >
+                                No helpers yet. Create one to keep a lightweight assistant brief in this browser shell.
+                            </div>
+                        </div>
+                    </div>
+                    <div
                         id="clawStatus"
                         className="layer-state-label"
                         style={{
@@ -211,6 +407,96 @@ cl {
                         }}
                     >
                         Add a task. Plan now also needs an active live trace.
+                    </div>
+                </div>
+                <div
+                    id="helperBuilderPanel"
+                    className="layer-state-chip"
+                    style={{
+                        "display": "none",
+                        "gap": "12px",
+                        "marginBottom": "12px",
+                        "padding": "16px",
+                        "background": "linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(237, 244, 255, 0.98) 100%)",
+                        "border": "1px solid rgba(88, 116, 173, 0.14)",
+                        "boxShadow": "0 16px 30px rgba(48, 77, 128, 0.08)"
+                    }}
+                >
+                    <div style={{"display": "flex", "flexDirection": "column", "gap": "4px"}}>
+                        <div className="layer-state-label">Create Helper</div>
+                        <div style={{"color": "#1d2a3e", "fontSize": "16px", "fontWeight": "800"}}>Assistant Builder</div>
+                        <div style={{"color": "#526885", "fontSize": "12px", "lineHeight": "1.55"}}>
+                            Describe the helper once. The browser shell keeps the internal spec local and read-only for this demo session.
+                        </div>
+                    </div>
+                    <div style={{"display": "flex", "flexDirection": "column", "gap": "6px"}}>
+                        <label className="layer-state-label" htmlFor="helperNameInput" style={{"fontSize": "11px"}}>Name</label>
+                        <input
+                            id="helperNameInput"
+                            type="text"
+                            placeholder="Morning Brief"
+                            spellcheck="false"
+                            style={{
+                                "width": "100%",
+                                "padding": "11px 12px",
+                                "borderRadius": "14px",
+                                "border": "1px solid rgba(88, 116, 173, 0.14)",
+                                "background": "#ffffff",
+                                "boxSizing": "border-box",
+                                "color": "#1f345a",
+                                "fontSize": "14px",
+                                "fontWeight": "600"
+                            }}
+                        />
+                    </div>
+                    <div style={{"display": "flex", "flexDirection": "column", "gap": "6px"}}>
+                        <label className="layer-state-label" htmlFor="helperGoalInput" style={{"fontSize": "11px"}}>What do you want it to do</label>
+                        <textarea
+                            id="helperGoalInput"
+                            rows={6}
+                            placeholder="Summarize the newest Jac and Electron updates I should know before I start work."
+                            spellcheck="false"
+                            style={{
+                                "width": "100%",
+                                "minHeight": "136px",
+                                "padding": "12px 14px",
+                                "borderRadius": "16px",
+                                "border": "1px solid rgba(88, 116, 173, 0.14)",
+                                "background": "#ffffff",
+                                "boxSizing": "border-box",
+                                "color": "#1f345a",
+                                "fontSize": "14px",
+                                "fontWeight": "600",
+                                "lineHeight": "1.6",
+                                "resize": "vertical"
+                            }}
+                        ></textarea>
+                    </div>
+                    <div style={{"display": "flex", "flexDirection": "column", "gap": "6px"}}>
+                        <label className="layer-state-label" htmlFor="helperFrequencySelect" style={{"fontSize": "11px"}}>How often</label>
+                        <select
+                            id="helperFrequencySelect"
+                            style={{
+                                "width": "100%",
+                                "padding": "11px 12px",
+                                "borderRadius": "14px",
+                                "border": "1px solid rgba(88, 116, 173, 0.14)",
+                                "background": "#ffffff",
+                                "boxSizing": "border-box",
+                                "color": "#1f345a",
+                                "fontSize": "14px",
+                                "fontWeight": "600"
+                            }}
+                        >
+                            <option value="once">Just once</option>
+                            <option value="browser_open">On browser open</option>
+                            <option value="daily">Daily</option>
+                            <option value="weekly">Weekly</option>
+                        </select>
+                    </div>
+                    <div className="layer-panel-actions" style={{"marginBottom": "0"}}>
+                        <button id="helperCreateBtn" className="layer-btn" type="button">Create</button>
+                        <button id="helperCancelBtn" className="layer-btn" type="button">Cancel</button>
                     </div>
                 </div>
                 <pre id="layerLog" className="layer-log">Layer pipeline ready.</pre>

@@ -107,6 +107,110 @@ def to_snake_case(s: str) -> str {
     return s;
 }
 
+"""R: Adapt a live observation target dict into the compiler's element schema.
+M: Copies only the locator fields the compiler already understands and renames `text`.
+E: Missing or malformed targets return an empty element dict without affecting old inputs.
+"""
+def normalize_compiler_element(raw_target: Any) -> dict[str, Any] {
+    element: dict[str, Any] = {};
+    if not isinstance(raw_target, dict) { return element; }
+
+    tag: str = str(raw_target.get("tag", ""));
+    if tag { element["tag"] = tag; }
+
+    el_id: str = str(raw_target.get("id", ""));
+    if el_id { element["id"] = el_id; }
+
+    name: str = str(raw_target.get("name", ""));
+    if name { element["name"] = name; }
+
+    role: str = str(raw_target.get("role", ""));
+    if role { element["role"] = role; }
+
+    el_type: str = str(raw_target.get("type", ""));
+    if el_type { element["type"] = el_type; }
+
+    label: str = str(raw_target.get("label", ""));
+    if label { element["label"] = label; }
+
+    inner_text: str = str(raw_target.get("text", ""));
+    if inner_text { element["innerText"] = inner_text; }
+
+    placeholder: str = str(raw_target.get("placeholder", ""));
+    if placeholder { element["placeholder"] = placeholder; }
+
+    return element;
+}
+
+"""R: Normalize a single event into the schema expected by the compiler pipeline.
+M: Preserves compiler-native fields, backfills live-trace aliases, and synthesizes ids when absent.
+E: Unknown event types pass through; malformed targets only affect the synthesized element field.
+"""
+def normalize_compiler_event(
+    raw_event: Any,
+    session_id: str,
+    index: int
+) -> Any {
+    if not isinstance(raw_event, dict) { return raw_event; }
+
+    event: dict[str, Any] = dict(raw_event);
+    evt_id: str = str(event.get("id", ""));
+    if not evt_id {
+        base: str = session_id if session_id else "session";
+        evt_id = "evt_" + base + "_" + str(index);
+    }
+    event["id"] = evt_id;
+
+    if not event.get("sessionId") and session_id {
+        event["sessionId"] = session_id;
+    }
+
+    if not event.get("timestamp") and event.get("recorded_at") {
+        event["timestamp"] = str(event.get("recorded_at", ""));
+    }
+
+    if str(event.get("type", "")) == "navigate" {
+        event["type"] = "navigation";
+    }
+
+    if not isinstance(event.get("element", None), dict) {
+        target: dict[str, Any] = normalize_compiler_element(event.get("target", {}));
+        if target {
+            event["element"] = target;
+        }
+    }
+
+    return event;
+}
+
+"""R: Normalize session-level live-trace aliases into the compiler's stable schema.
+M: Preserves existing compiler fields and only fills gaps from live observation keys.
+E: Old-schema sessions remain unchanged; non-dict event entries are preserved as-is.
+"""
+def normalize_compiler_session(session: dict[str, Any]) -> dict[str, Any] {
+    normalized: dict[str, Any] = dict(session);
+
+    session_id: str = str(session.get("id", "") or session.get("session_id", ""));
+    if session_id { normalized["id"] = session_id; }
+
+    start_url: str = str(session.get("startUrl", "") or session.get("source_url", ""));
+    if start_url { normalized["startUrl"] = start_url; }
+
+    goal: str = str(session.get("goalContext", "") or session.get("title", ""));
+    if goal { normalized["goalContext"] = goal; }
+
+    raw_events: Any = session.get("events", []);
+    if isinstance(raw_events, list) {
+        normalized_events: list[Any] = [];
+        for (i, raw_event) in enumerate(raw_events) {
+            normalized_events.append(normalize_compiler_event(raw_event, session_id, i));
+        }
+        normalized["events"] = normalized_events;
+    }
+
+    return normalized;
+}
+
 # ============================================================
 # FILE I/O
 # ============================================================
@@ -1154,9 +1258,10 @@ def compile_session(
     options: dict[str, Any]
 ) -> dict[str, Any] {
     warnings: list[str] = [];
+    normalized_session: dict[str, Any] = normalize_compiler_session(session);
 
     # 1. Clean
-    cleaned: dict[str, Any] = clean_trace(session);
+    cleaned: dict[str, Any] = clean_trace(normalized_session);
     for r in cleaned.get("removedEventIds", []) {
         if isinstance(r, dict) {
             warnings.append(
@@ -1166,7 +1271,7 @@ def compile_session(
     }
 
     # 2. Heuristic compile
-    partial: dict[str, Any] = heuristic_compile(session, cleaned, options);
+    partial: dict[str, Any] = heuristic_compile(normalized_session, cleaned, options);
 
     # 3. Optional model enrichment (caller injects via model_fn)
     model_fn: Any = options.get("model_fn", None);
@@ -1176,7 +1281,7 @@ def compile_session(
 
     if model_fn is not None and allow_llm {
         try {
-            model_result: Any = model_fn(session, cleaned, options);
+            model_result: Any = model_fn(normalized_session, cleaned, options);
             if isinstance(model_result, dict) {
                 partial = merge_model_result(partial, model_result);
             }

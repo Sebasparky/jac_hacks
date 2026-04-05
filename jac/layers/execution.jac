@@ -3,7 +3,6 @@ import sys;
 import json;
 import time;
 import from typing { Any }
-import from jac.layers.compilation { validate_compiled_artifact }
 
 glob DATA_ROOT: str = "./jac/layer_data";
 glob WORKFLOW_DIR: str = DATA_ROOT + "/workflows";
@@ -185,6 +184,101 @@ def is_segmented_artifact(candidate: Any) -> bool {
         "continuation" in candidate and
         "stop_policy" in candidate
     );
+}
+
+"""R: Validate one segmented compiled artifact before execution.
+M: Checks the same structural contract used by compilation without importing its CLI module.
+E: Structural validation only; semantic/runtime issues are handled by the executor later.
+"""
+def validate_compiled_artifact(candidate: dict[str, Any]) -> dict[str, Any] {
+    if not isinstance(candidate, dict) {
+        return {"ok": False, "errors": ["artifact must be a dict"]};
+    }
+
+    errors: list[str] = [];
+    required_top: list[str] = [
+        "version", "id", "name", "recording_id", "metadata",
+        "one_time", "repeated", "continuation", "stop_policy", "compileInfo"
+    ];
+
+    for field in required_top {
+        if field not in candidate {
+            errors.append(field + ": required field is missing");
+        }
+    }
+
+    if candidate.get("version") != "1.0" {
+        errors.append("version: must be \"1.0\"");
+    }
+
+    metadata: Any = candidate.get("metadata", {});
+    if isinstance(metadata, dict) {
+        for field in ["createdAt", "updatedAt", "createdByUserId", "source"] {
+            if field not in metadata {
+                errors.append("metadata." + field + ": required field is missing");
+            }
+        }
+
+        source: Any = metadata.get("source", {});
+        if isinstance(source, dict) {
+            for field in ["recordingId", "origin", "domains"] {
+                if field not in source {
+                    errors.append("metadata.source." + field + ": required field is missing");
+                }
+            }
+        }
+    }
+
+    for seg_name in ["one_time", "repeated"] {
+        segment: Any = candidate.get(seg_name, {});
+        if not isinstance(segment, dict) {
+            errors.append(seg_name + ": must be a dict");
+        } else {
+            if not isinstance(segment.get("inputs"), list) {
+                errors.append(seg_name + ".inputs: must be a list");
+            }
+            if not isinstance(segment.get("steps"), list) {
+                errors.append(seg_name + ".steps: must be a list");
+            }
+            if not isinstance(segment.get("annotations"), list) {
+                errors.append(seg_name + ".annotations: must be a list");
+            }
+        }
+    }
+
+    continuation: Any = candidate.get("continuation", {});
+    if not isinstance(continuation, dict) {
+        errors.append("continuation: must be a dict");
+    } elif not isinstance(continuation.get("strategy"), list) {
+        errors.append("continuation.strategy: must be a list");
+    }
+
+    stop_policy: Any = candidate.get("stop_policy", {});
+    if not isinstance(stop_policy, dict) {
+        errors.append("stop_policy: must be a dict");
+    } else {
+        if "mode" not in stop_policy {
+            errors.append("stop_policy.mode: required field is missing");
+        }
+        if "options" not in stop_policy {
+            errors.append("stop_policy.options: required field is missing");
+        }
+    }
+
+    compile_info: Any = candidate.get("compileInfo", {});
+    if isinstance(compile_info, dict) {
+        for field in ["compilerVersion", "compiledAt", "sourceRecordingId"] {
+            if field not in compile_info {
+                errors.append("compileInfo." + field + ": required field is missing");
+            }
+        }
+    }
+
+    if errors {
+        return {"ok": False, "errors": errors};
+    }
+
+    return {"ok": True, "artifact": candidate};
 }
 
 """R: Build execution plan output for one flat compiled workflow.
